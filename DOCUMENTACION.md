@@ -98,8 +98,8 @@ Ambas cámaras Nuroum V403 emiten por defecto con el nombre idéntico `"LOCALHOS
 
 ### 5.1. Identificación del Hardware Físico
 * **Modelo:** Nuroum V403 / Hamedal Cam V403 (`device_type: 033`)
-* **Cámara 1:** IP `192.168.9.108` | MAC `98:6E:E8:5F:39:54` | S/N `AW19MRAB8AAAN01380`
-* **Cámara 2:** IP `192.168.9.171` | MAC `02:00:C0:A8:09:AB` | S/N `AW19MRAB8AAAA00672`
+* **Cámara 1:** IP `192.168.9.108` | MAC `98:6E:E8:5F:39:54` | S/N `AW19MRAB8AAAN*****`
+* **Cámara 2:** IP `192.168.9.171` | MAC `98:6E:E8:5F:36:90` | S/N `AW19MRAB8AAAA*****`
 
 ### 5.2. Configuración Esencial en NearSync para Evitar Movimientos No Deseados
 Para garantizar que las cámaras **permanezcan fijas y no se muevan por su cuenta** al recibir corriente o al conectar la señal de vídeo NDI, la utilidad oficial **NearSync** (`Device Setting`) debe configurarse con los siguientes parámetros:

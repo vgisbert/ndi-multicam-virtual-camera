@@ -1,24 +1,73 @@
-# Backups locales (NO subir a GitHub)
-backups/
+# =============================================================================
+# .gitignore para NDI Multicam Virtual Camera (Windows 10 / 11)
+# =============================================================================
 
-# Entornos virtuales Python y caches
+# --- Copias de Seguridad Locales ---
+backups/
+backup/
+*.bak
+*.backup
+
+# --- Secretos, Credenciales y Entorno ---
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.cert
+*.crt
+*.pfx
+*.p12
+*id_rsa*
+credentials.json
+secrets.json
+
+# --- Entornos Virtuales y Caches de Python ---
 core/venv/
 venv/
 ENV/
 env/
+.venv/
 __pycache__/
 **/__pycache__/
 *.py[cod]
 *$py.class
+*.so
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Rust / Cargo artifacts temporales
+# --- Compilación Rust / Cargo / Tauri ---
 src-tauri/target/
 target/
+**/*.rs.bk
+*.pdb
 
-# Logs y temporales de sistema
+# --- Empaquetadores y Temporales (PyInstaller, etc.) ---
+build/
+dist/
+*.spec
+*.manifest
 *.log
-.DS_Store
+
+# --- Archivos Temporales y Cachés de Sistema Operativo ---
 Thumbs.db
 desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+*.tmp
+*.temp
+*~
+*.swp
+*.swo
+
+# --- Entornos de Desarrollo (IDE) ---
 .vscode/
 .idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
