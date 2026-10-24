@@ -49,9 +49,11 @@ target/
 # --- Empaquetadores y Temporales (PyInstaller, etc.) ---
 build/
 dist/
+dist_portable/driver/
 *.spec
 *.manifest
 *.log
+
 
 # --- Archivos Temporales y Cachés de Sistema Operativo ---
 Thumbs.db
