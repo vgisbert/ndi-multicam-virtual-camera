@@ -76,3 +76,20 @@ Para asegurar la robustez de las aplicaciones frente a problemas externos (red, 
 
 *   **Caché Local de Datos de API:** Cuando una aplicación dependa de listas de opciones que raramente cambian pero que provienen de APIs externas (ej. lista de voces de Edge TTS), **siempre** se debe crear un archivo de caché local (ej. `voices.json`). El backend debe intentar leer de este archivo primero o usarlo como _fallback_ en caso de que la petición de red falle. Esto evita que el frontend se rompa si el proveedor cambia su API o bloquea la red.
 *   **Control de Foco y Scroll (React):** Cuando se abran o cierren ventanas modales o paneles laterales que redimensionen los editores de texto (`textarea`), se debe implementar lógica con `useEffect` para forzar al navegador a mantener la posición del cursor a la vista (por ejemplo, reasignando el `selectionRange` y el `focus()`). Esto evita que los saltos de diseño (reflow) oculten la línea en la que el usuario estaba trabajando.
+
+## 8. Gestión de Artefactos de Salida y Regla Anti-Duplicados en Git
+
+En proyectos que generan ejecutables, paquetes portables o instaladores para distribución final, se debe aplicar una separación estricta entre el **código fuente original** y los **productos derivados de compilación**:
+
+*   **Principio de Fuente Única de la Verdad:**  
+    Cualquier recurso auxiliar (drivers, bibliotecas `.dll`, plantillas de configuración o scripts de instalación) debe residir en un único directorio maestro del código fuente (ej. `/driver`). Nunca dupliques manualmente estos archivos en otras ramas del proyecto.
+*   **Aislar Paquetes y Distribuciones en `.gitignore`:**  
+    Cuando un script de empaquetado (como `compilar_y_empaquetar.bat` o `build_exe.py`) copie recursos originales hacia carpetas de salida preparadas para llevar en pendrive o distribuir (ej. `dist_portable/driver/`, `dist/`, `build/`), dichas carpetas de salida deben estar **expresamente ignoradas en `.gitignore`**.  
+    Esto evita inflar el historial de Git con binarios idénticos, evita conflictos de sincronización y previene el error crítico de editar por accidente la copia generada en vez del archivo fuente original.
+*   **Procedimiento para Desindexar Duplicados en Git:**  
+    Si un producto derivado o carpeta de salida ya fue rastreado por Git en commits anteriores, debe retirarse del seguimiento del repositorio sin destruir el archivo local:
+    ```bash
+    git rm -r --cached ruta/a/carpeta_duplicada/
+    ```
+    Añade la ruta correspondiente a `.gitignore` y realiza el *commit* de limpieza.
+
