@@ -38,25 +38,25 @@ Cualquier proyecto que utilice este sistema debe estructurarse de la siguiente m
 
 ```text
 MiProyecto/
-├── compilar_y_empaquetar.bat      <-- Script de compilación automática en 1 clic
-├── config.json                    <-- Configuración editable externa junto al .exe
+├── arrancar.bat                   <-- Script de desarrollo y recarga en 1 clic
+├── compilar_y_empaquetar.bat      <-- Script de compilación release portable automática
+├── backup.py                      <-- Script de copia de seguridad integral
 ├── dist_portable/                 <-- Carpeta final lista para distribuir / pendrive
 │   ├── MiApp.exe                  <-- Ejecutable nativo final (~3 MB)
 │   ├── WebView2Loader.dll         <-- Conector oficial de Microsoft Edge WebView2
-│   ├── config.json                <-- Ajustes del usuario
+│   ├── config.json                <-- Ajustes del usuario (opcional)
 │   └── LEEME_WINDOWS_10.txt       <-- Instrucciones de uso para el usuario final
 ├── frontend/                      <-- Interfaz de usuario (HTML5, Tailwind, JS)
-│   ├── index.html
-│   ├── app.js
-│   ├── i18n.js
-│   └── icons/
+│   ├── index.html                 <-- Vista principal
+│   ├── app.js                     <-- Lógica e interactividad del cliente
+│   └── i18n.js                    <-- Internacionalización (opcional)
 └── src-tauri/                     <-- Motor backend en Rust
     ├── build.rs                   <-- Script de enlace de recursos Windows (con parche anti-tildes)
-    ├── Cargo.toml                 <-- Configuración de librerías y optimización LTO
-    ├── tauri.conf.json            <-- Propiedades de la ventana, título e identificador
+    ├── Cargo.toml                 <-- Configuración de dependencias y optimización LTO
+    ├── tauri.conf.json            <-- Propiedades de ventanas, títulos e identificadores
     ├── icons/                     <-- Iconos (icon.ico, 32x32.png, 128x128.png)
     └── src/
-        ├── main.rs                <-- Punto de entrada de Windows (sin ventana negra)
+        ├── main.rs                <-- Punto de entrada de Windows (sin consola negra)
         ├── lib.rs                 <-- Registro de comandos y ciclo de vida de Tauri
         ├── commands.rs            <-- Funciones que el frontend invoca por IPC
         └── models.rs              <-- Estructuras de datos compartidas (JSON)
@@ -103,14 +103,14 @@ strip = true         # Elimina metadatos y símbolos debug (-4 MB)
 
 ### 4.2. `src-tauri/tauri.conf.json`
 
-Define el tamaño inicial de la ventana, título y la ruta relativa a la carpeta `frontend`:
+Define la ventana principal, dimensiones y la ruta relativa a la carpeta `frontend`:
 
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/schema.json",
-  "productName": "Mi-App",
+  "productName": "MiApp",
   "version": "1.0.0",
-  "identifier": "com.antigravity.mi-app",
+  "identifier": "com.antigravity.miapp",
   "build": {
     "frontendDist": "../frontend"
   },
@@ -120,10 +120,10 @@ Define el tamaño inicial de la ventana, título y la ruta relativa a la carpeta
       {
         "title": "Mi Aplicación Nativa",
         "url": "index.html",
-        "width": 420,
-        "height": 640,
-        "minWidth": 360,
-        "minHeight": 500,
+        "width": 1050,
+        "height": 720,
+        "minWidth": 800,
+        "minHeight": 600,
         "resizable": true,
         "decorations": true,
         "transparent": false,
@@ -149,14 +149,21 @@ Define el tamaño inicial de la ventana, título y la ruta relativa a la carpeta
 > [!WARNING]
 > **Bug Conocido de Windows / MinGW:** Si la ruta del proyecto contiene tildes o caracteres especiales (por ejemplo: `Cámera`, `música`, `año`, `diseño`), el compilador de recursos GNU `windres.exe` fallará con el error `Invalid argument` al intentar abrir el icono.
 
-Para solucionarlo de forma permanente en cualquier proyecto, `build.rs` copia el icono a una ruta temporal garantizada en ASCII antes de invocar a `tauri_build`:
+En compilaciones limpias estándar basta con:
+```rust
+fn main() {
+    tauri_build::build()
+}
+```
+
+Si el proyecto se encuentra alojado en carpetas con caracteres no-ASCII o tildes, `build.rs` puede copiar el icono a una ruta temporal garantizada en ASCII antes de invocar a `tauri_build`:
 
 ```rust
 fn main() {
     let mut windows = tauri_build::WindowsAttributes::new();
     
     // Copiar el icono a una ruta temporal libre de tildes para evitar errores de windres
-    let temp_ico = std::path::PathBuf::from(r"C:\Users\super\.cargo\vcam_app_icon.ico");
+    let temp_ico = std::path::PathBuf::from(r"C:\Users\super\.cargo\app_icon_temp.ico");
     if std::path::Path::new("icons/icon.ico").exists() {
         let _ = std::fs::copy("icons/icon.ico", &temp_ico);
         windows = windows.window_icon_path(&temp_ico);
@@ -186,14 +193,14 @@ fn main() {
 
 ### 4.5. Comunicación Frontend <-> Rust (`frontend/app.js`)
 
-En el frontend no es necesario utilizar frameworks pesados ni empaquetadores como Webpack si no se desean. Se puede usar JavaScript estándar con la API nativa de Tauri:
+En el frontend no es necesario utilizar frameworks pesados ni empaquetadores complejos si no se desean. Se puede usar JavaScript estándar con la API nativa de Tauri:
 
 ```javascript
 // Llamar a una función de Rust por memoria IPC directa
 async function obtenerEstado() {
   if (window.__TAURI__ && window.__TAURI__.core) {
     try {
-      // 'get_status' es el nombre del #[tauri::command] en Rust
+      // 'get_status' es el comando registrado en Rust con #[tauri::command]
       const data = await window.__TAURI__.core.invoke('get_status');
       console.log("Datos recibidos de Rust:", data);
       actualizarInterfaz(data);
@@ -201,10 +208,9 @@ async function obtenerEstado() {
       console.error("Error al invocar Rust:", err);
     }
   } else {
-    // Modo de prueba en navegador normal (fallback)
-    const res = await fetch('/api/status');
-    const data = await res.json();
-    actualizarInterfaz(data);
+    // Modo de prueba o mock para desarrollo en navegador
+    console.warn("Entorno Web puro: usando Mock");
+    actualizarInterfaz({ nominal: true, items: [] });
   }
 }
 ```
@@ -216,7 +222,7 @@ Y en Rust (`src-tauri/src/commands.rs`):
 pub fn get_status() -> Result<MiEstado, String> {
     Ok(MiEstado {
         nominal: true,
-        fps: 60.0,
+        items: vec!["item1".into(), "item2".into()],
     })
 }
 ```
@@ -225,11 +231,11 @@ pub fn get_status() -> Result<MiEstado, String> {
 
 ## 5. El Script Universal de Compilación: `compilar_y_empaquetar.bat`
 
-Copia este archivo en la raíz de cualquier proyecto. Se encarga de:
-1. Configurar las rutas de Cargo y MinGW.
-2. Mapear una unidad virtual (`M:`) para aislar el compilador de espacios y tildes en los nombres de carpeta.
-3. Compilar en modo Release.
-4. Generar la carpeta portable `dist_portable` con el `.exe`, librerías auxiliares y empaquetar un archivo `.zip` listo para pendrive.
+Copia este script en la raíz de cualquier proyecto. Se encarga de:
+1. Localizar y priorizar las herramientas del sistema (Cargo, MinGW/WinLibs).
+2. Mapear una unidad virtual (`M:`) para aislar el compilador de espacios y caracteres especiales en las rutas.
+3. Compilar en modo Release con optimizaciones LTO agresivas.
+4. Generar la carpeta portable `dist_portable` con el binario (`MiApp.exe`), librerías auxiliares (`WebView2Loader.dll`) y empaquetar un archivo `.zip` listo para pendrive.
 
 ```bat
 @echo off
@@ -242,10 +248,13 @@ echo.
 :: 1. Localizar herramientas en el sistema
 set "CARGO_PATH=%USERPROFILE%\.cargo\bin"
 set "WINGET_MINGW=%LOCALAPPDATA%\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin"
-set "PATH=%WINGET_MINGW%;%CARGO_PATH%;%PATH%"
 
-:: 2. Directorio de compilación fuera de rutas con caracteres no-ASCII
-set "CARGO_TARGET_DIR=C:\Users\super\.cargo\target_build_temp"
+if exist "%WINGET_MINGW%" (
+    set "PATH=%WINGET_MINGW%;%PATH%"
+)
+if exist "%CARGO_PATH%" (
+    set "PATH=%CARGO_PATH%;%PATH%"
+)
 
 where cargo >nul 2>&1
 if errorlevel 1 (
@@ -253,6 +262,9 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+
+:: 2. Directorio de compilación fuera de rutas con caracteres no-ASCII
+set "CARGO_TARGET_DIR=C:\Users\super\.cargo\target_build_temp"
 
 :: 3. Mapear unidad virtual temporal M: (Inmunidad contra espacios y tildes)
 subst M: /d >nul 2>&1
@@ -279,7 +291,7 @@ echo [2/3] Creando carpeta de distribucion portable 'dist_portable'...
 if not exist "dist_portable" mkdir "dist_portable"
 
 :: 4. Copiar archivos necesarios
-copy /Y "C:\Users\super\.cargo\target_build_temp\release\mi-app.exe" "dist_portable\Mi-App.exe" >nul
+copy /Y "C:\Users\super\.cargo\target_build_temp\release\mi-app.exe" "dist_portable\MiApp.exe" >nul
 copy /Y "C:\Users\super\.cargo\target_build_temp\release\WebView2Loader.dll" "dist_portable\WebView2Loader.dll" >nul 2>&1
 if exist "config.json" copy /Y "config.json" "dist_portable\config.json" >nul
 
@@ -291,7 +303,7 @@ echo ===========================================================================
 echo.
 echo Para ejecutar en cualquier ordenador Windows 10 o Windows 11:
 echo   1. Copia esta carpeta en el ordenador destino (o ejecutala desde un pendrive).
-echo   2. Haz doble clic en "Mi-App.exe".
+echo   2. Haz doble clic en "MiApp.exe".
 echo.
 echo NOTA: No requiere instalar Python, Node.js ni configurar variables de entorno.
 echo =============================================================================

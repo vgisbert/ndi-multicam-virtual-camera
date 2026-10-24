@@ -1,7 +1,12 @@
 # Guía de Contexto Técnico: Diagnóstico y Resolución de Entornos Virtuales y Respaldos en Proyectos Híbridos (Windows / Python + Node.js)
 
 > **Propósito de este documento:**  
-> Servir como referencia técnica reutilizable e inyectable en hilos de conversación, documentación de repositorios o prompts para agentes de IA en proyectos con arquitectura similar (FastAPI / Python + Electron / Frontend sobre Windows).
+> Servir como referencia técnica reutilizable e inyectable en hilos de conversación, documentación de repositorios o prompts para agentes de IA en proyectos con arquitectura similar (FastAPI / Python + Electron / Tauri / Frontend sobre Windows).
+>
+> 💡 **Nota de aplicación:**  
+> En proyectos que implementan motores nativos en **Rust y Tauri v2**, se evita por diseño la fragilidad de runtimes y entornos virtuales de Python para la lógica de bajo nivel. No obstante, este documento se adopta transversalmente en el ecosistema Antigravity por dos motivos clave:  
+> 1. **Fundamentación de `backup.py`:** Las secciones 2 y 3.2 explican y definen la arquitectura universal del script de resguardo `backup.py`.  
+> 2. **Base de conocimiento Windows:** Diagnóstico de cabecera para dependencias, enlaces simbólicos, codificación batch y preservación de entornos.
 
 ---
 
@@ -268,6 +273,8 @@ exit /b 1
 
 ### 3.2. Plantilla `backup.py` Robusta y Extensible
 
+Copia este script en la raíz de cualquier proyecto para disponer de un sistema de copias de seguridad instantáneas, versionadas por fecha y hora, y completamente trazables (adaptando `FILES_TO_BACKUP` a la estructura del proyecto):
+
 ```python
 import os
 import shutil
@@ -279,31 +286,30 @@ BACKUPS_DIR = os.path.join(BASE_DIR, "backups")
 
 # Lista exhaustiva y categorizada de elementos a respaldar
 FILES_TO_BACKUP = [
-    # Frontend
-    "frontend/index.html",
-    "frontend/main.js",
-    "frontend/preload.js",
-    "frontend/package.json",
-    "frontend/package-lock.json",
-    
-    # Backend
-    "backend/main.py",
-    "backend/recorder.py",
-    "backend/batch_process.py",
-    "backend/audio_chunker.py",
-    "backend/requirements.txt",
-    "backend/check_gpu.py",
-    
-    # Configuración y lanzadores raíz
+    # Configuración raíz y control de versiones
+    ".gitignore",
     "config.json",
+    "LICENSE",
+    "README.md",
+    
+    # Frontend y recursos de interfaz
+    "frontend",
+    
+    # Backend / Motor nativo (según arquitectura: backend/ o src-tauri/)
+    "backend",
+    "src-tauri",
+    
+    # Lanzadores y mantenimiento
     "arrancar.bat",
-    "revisar_e_instalar_dependencias.bat",
+    "compilar_y_empaquetar.bat",
     "backup.py",
     
-    # Documentación técnica y funcional
+    # Documentación técnica, guías y especificaciones
     "DOCUMENTACION.md",
-    "MANUAL_USUARIO.md",
-    "DESIGN.md"
+    "PLAN_DE_TRABAJO.md",
+    "GUIA_COMPILACION_NATIVA_TAURI_RUST.md",
+    "GUIA_CONTEXTO_PROBLEMAS_ENTORNO_Y_BACKUP.md",
+    "Guia_Inicio_Nuevos_Proyectos.md"
 ]
 
 def make_backup():

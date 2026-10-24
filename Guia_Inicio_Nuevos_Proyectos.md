@@ -36,8 +36,9 @@ Todo proyecto debe ser "Auto-Configurable". La persona (o el propio desarrollado
 
 ## 4. Estructura de Directorios Estandarizada
 
-Para mantener el orden cuando los proyectos crezcan y abarquen múltiples tecnologías:
+Para mantener el orden cuando los proyectos crezcan y abarquen múltiples tecnologías, en el espacio de trabajo de Antigravity se establecen dos modelos arquitectónicos estandarizados:
 
+### Modelo A: Herramientas y Servicios Basados en Python (IA / Procesamiento)
 ```text
 /Nombre_Del_Proyecto
 │
@@ -54,6 +55,26 @@ Para mantener el orden cuando los proyectos crezcan y abarquen múltiples tecnol
 └── DOCUMENTACION.md         # Documentación específica de qué hace este proyecto
 ```
 
+### Modelo B: Aplicaciones Nativas de Alto Rendimiento (Tauri v2 + Rust)
+*Arquitectura recomendada para aplicaciones de escritorio ultraligeras, reactivas y sin dependencias de runtime:*
+```text
+/Nombre_Del_Proyecto
+│
+├── /src-tauri               # Núcleo de alto rendimiento en Rust (sin dependencias pesadas)
+│   ├── Cargo.toml           # Dependencias y optimización Release (LTO, opt-level="z", strip)
+│   ├── tauri.conf.json      # Ventanas, propiedades y permisos nativos
+│   └── src/                 # Lógica de bajo nivel, comandos IPC, sockets UDP/TCP
+│
+├── /frontend                # Interfaz de usuario táctica (HTML5, Tailwind/CSS, JS reactivo)
+│   ├── index.html           # Vista principal
+│   └── app.js               # Conector IPC con Rust
+│
+├── arrancar.bat             # Script de desarrollo con recarga inmediata
+├── compilar_y_empaquetar.bat# Compilación release portable a 'dist_portable' (~3 MB)
+├── backup.py                # Copia de seguridad integral y trazable
+└── DOCUMENTACION.md         # Memoria técnica del sistema
+```
+
 ## 5. Protocolo de Resolución de Problemas Comunes
 
 *   **Problema:** Al arrancar el `.bat` aparece `El sistema no puede encontrar la ruta especificada` en referencia a Python.
@@ -62,13 +83,10 @@ Para mantener el orden cuando los proyectos crezcan y abarquen múltiples tecnol
 *   **Problema:** Error de incompatibilidad de librerías al intentar añadir una función nueva.
     *   *Solución:* Comprobar que estás instalando el nuevo paquete con el entorno virtual activado. Si funciona, no olvides volver a hacer `pip freeze > requirements.txt` para proteger la nueva librería.
 
-## 6. Interfaces Gráficas (GUI) para Programas Simples
+## 6. Interfaces Gráficas (GUI) de Escritorio
 
-Cuando se desarrollen programas de escritorio simples o utilidades locales que requieran una Interfaz Gráfica de Usuario (GUI), se debe mantener una estética moderna, consistente y estandarizada en todos los proyectos.
-
-*   **Librería Estándar:** Se debe utilizar siempre **`customtkinter`** (tomando como referencia el estilo de código y diseño del proyecto `D:\Documentos\Antigravity\Compresión MP3`).
-*   **Diseño:** Mantener un tema oscuro y un diseño limpio, moderno y centrado en la usabilidad.
-*   **Evitar:** El uso de `tkinter` estándar para la interfaz principal, ya que ofrece un diseño anticuado (Windows 95/98) que rompe con la consistencia visual premium del resto de herramientas.
+*   **Para scripts y utilidades locales simples en Python:** Se debe utilizar siempre **`customtkinter`** (tomando como referencia el diseño del proyecto `Compresión MP3`), con tema oscuro y estética moderna. Se debe evitar `tkinter` estándar.
+*   **Para aplicaciones de alto rendimiento, baja latencia o distribución portable sin dependencias:** La arquitectura recomendada y prioritaria es **Tauri v2 + Rust** (consultar `GUIA_COMPILACION_NATIVA_TAURI_RUST.md`). Ofrece ejecutables de ~3 MB, consumo mínimo de RAM y cero dependencias de runtimes externos en la máquina del usuario.
 
 ## 7. Manejo de APIs Externas y Refresco de UI
 
