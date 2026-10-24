@@ -1,0 +1,24 @@
+# Backups locales (NO subir a GitHub)
+backups/
+
+# Entornos virtuales Python y caches
+core/venv/
+venv/
+ENV/
+env/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Rust / Cargo artifacts temporales
+src-tauri/target/
+target/
+
+# Logs y temporales de sistema
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

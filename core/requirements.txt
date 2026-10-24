@@ -1,0 +1,5 @@
+# Dependencias base para NDI Virtual Camera
+numpy>=1.26.4
+opencv-python-headless>=4.9.0
+pyvirtualcam>=0.15.0
+pywebview>=6.2.0

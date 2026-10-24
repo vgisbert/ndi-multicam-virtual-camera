@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html class="dark" lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title data-i18n="app_title">Cámara Virtual NDI</title>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400..800&family=Space+Grotesk:wght@500..700&display=swap" rel="stylesheet">
+  <style>
+    html, body {
+      margin: 0; padding: 0;
+      background: #111319;
+      overscroll-behavior: none;
+      user-select: none;
+      -webkit-user-select: none;
+      overflow-x: hidden;
+    }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: #111319; }
+    ::-webkit-scrollbar-thumb { background: #3b494b; border-radius: 2px; }
+    .tally-pgm-pulse {
+      box-shadow: 0 0 12px rgba(255, 23, 68, 0.6);
+      animation: pgmPulse 1.8s infinite ease-in-out;
+    }
+    @keyframes pgmPulse {
+      0%, 100% { border-color: #ff1744; box-shadow: 0 0 8px rgba(255, 23, 68, 0.4); }
+      50% { border-color: #ff5252; box-shadow: 0 0 16px rgba(255, 23, 68, 0.8); }
+    }
+    .thumb-fade { transition: opacity 0.2s ease-in-out; }
+  </style>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            "surface-dim": "#111319",
+            "surface-lowest": "#0b0e13",
+            "surface-low": "#191c21",
+            "surface": "#1d2025",
+            "surface-high": "#272a30",
+            "surface-highest": "#32353a",
+            "cyan-tac": "#00f0ff",
+            "cyan-dim": "#006970",
+            "amber-tac": "#feb300",
+            "amber-dim": "#4d3400",
+            "red-tac": "#ff1744",
+            "red-dim": "#93000a",
+            "txt-main": "#e1e2e9",
+            "txt-muted": "#849495",
+            "border-tac": "#3b494b"
+          },
+          fontFamily: {
+            "sans": ["Space Grotesk", "sans-serif"],
+            "mono": ["JetBrains Mono", "monospace"]
+          }
+        }
+      }
+    };
+  </script>
+</head>
+<body class="bg-surface-dim text-txt-main font-mono text-[11px] antialiased flex flex-col h-screen p-2 gap-1.5">
+
+  <!-- ================= 1. CABECERA TÁCTICA UNIFICADA ================= -->
+  <header class="flex items-center justify-between bg-surface-low px-2.5 py-1.5 rounded border border-border-tac/40 shrink-0">
+    <div class="flex items-center gap-2">
+      <span id="header-status-dot" class="w-2 h-2 rounded-full bg-cyan-tac shadow-[0_0_6px_#00f0ff]"></span>
+      <span id="status-label" class="text-cyan-tac font-bold tracking-wider text-[10.5px]" data-i18n="status_nominal">SISTEMA NOMINAL // TODO OK</span>
+      <div class="text-txt-muted text-[9.5px] font-mono flex items-center gap-1 pl-1 border-l border-border-tac/40">
+        <span id="sources-count" class="text-txt-main font-bold">2</span>
+        <span id="sources-suffix" data-i18n="cam_online_suffix">CÁM ONLINE</span>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-1">
+      <!-- BOTÓN IDIOMA (SP / EN) -->
+      <button id="btn-lang" onclick="cycleLanguage()" class="px-1.5 py-0.5 rounded bg-surface-high hover:bg-surface-highest text-cyan-tac font-bold text-[10px] border border-border-tac/40 transition-colors cursor-pointer" data-i18n-title="btn_lang_title" title="Cambiar idioma">
+        SP
+      </button>
+
+      <!-- BOTÓN PIN ALWAYS ON TOP -->
+      <button id="btn-pin" onclick="togglePin()" class="w-6 h-6 rounded bg-surface-high hover:bg-surface-highest flex items-center justify-center text-txt-muted hover:text-cyan-tac transition-colors cursor-pointer" data-i18n-title="btn_pin_title" title="Fijar ventana siempre visible">
+        <span class="material-symbols-outlined text-[14px]">push_pin</span>
+      </button>
+
+      <!-- BOTÓN AJUSTES -->
+      <button id="btn-settings" onclick="openSettings()" class="w-6 h-6 rounded bg-surface-high hover:bg-surface-highest flex items-center justify-center text-txt-muted hover:text-txt-main transition-colors cursor-pointer" data-i18n-title="btn_settings_title" title="Configuración">
+        <span class="material-symbols-outlined text-[14px]">settings</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ================= 2. SECCIÓN DE MINIATURAS NDI (LIVE PREVIEWS) ================= -->
+  <main class="flex-1 flex flex-col min-h-0 bg-surface-lowest p-1.5 rounded border border-border-tac/30 overflow-hidden">
+    <!-- CONTENEDOR DINÁMICO DE TARJETAS DE CÁMARA CON MINIATURAS -->
+    <div id="cameras-container" class="flex-1 overflow-y-auto flex flex-col gap-1.5 pr-0.5">
+      <!-- Plantilla inyectada dinámicamente por app.js -->
+      <div class="p-4 text-center text-txt-muted flex flex-col items-center justify-center gap-2">
+        <span class="material-symbols-outlined text-[24px] animate-spin text-cyan-tac">progress_activity</span>
+        <span data-i18n="status_searching">Buscando cámaras NDI en la red...</span>
+      </div>
+    </div>
+  </main>
+
+  <!-- ================= MODAL DE CONFIGURACIÓN ================= -->
+  <div id="modal-settings" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-3">
+    <div class="bg-surface-low border border-border-tac rounded-lg w-full max-w-[340px] flex flex-col gap-3 p-3 shadow-2xl">
+      <div class="flex items-center justify-between border-b border-border-tac/40 pb-1.5">
+        <span class="font-sans font-bold text-[11px] text-cyan-tac uppercase tracking-wider" data-i18n="settings_title">CONFIGURACIÓN</span>
+        <button onclick="closeSettings()" class="text-txt-muted hover:text-txt-main">
+          <span class="material-symbols-outlined text-[16px]">close</span>
+        </button>
+      </div>
+
+      <div class="flex flex-col gap-2.5 text-[10px] max-h-[300px] overflow-y-auto pr-1">
+        <div class="flex flex-col gap-1">
+          <label class="text-txt-muted uppercase font-bold" data-i18n="settings_vcam_name">Nombre de Cámara Virtual</label>
+          <input id="cfg-vcam-name" type="text" class="bg-surface-lowest border border-border-tac rounded px-2 py-1 text-txt-main outline-none focus:border-cyan-tac">
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label class="text-txt-muted uppercase font-bold" data-i18n="settings_extra_ips_title">IPs Adicionales NDI</label>
+          <input id="cfg-extra-ips" type="text" placeholder="192.168.9.108, 192.168.9.171" class="bg-surface-lowest border border-border-tac rounded px-2 py-1 text-txt-main outline-none focus:border-cyan-tac">
+          <span class="text-[8.5px] text-txt-muted/70" data-i18n="settings_extra_ips_hint">Separadas por comas (ej. 192.168.9.108, 192.168.9.171)</span>
+        </div>
+
+        <div class="flex flex-col gap-1">
+          <label class="text-txt-muted uppercase font-bold" data-i18n="settings_aliases_title">Alias de Cámaras</label>
+          <div id="cfg-aliases-container" class="flex flex-col gap-1.5">
+            <!-- Rellenado dinámicamente -->
+          </div>
+        </div>
+      </div>
+
+      <div class="flex items-center justify-end gap-2 border-t border-border-tac/40 pt-2">
+        <button onclick="closeSettings()" class="px-2.5 py-1 rounded bg-surface-high hover:bg-surface-highest text-txt-muted font-bold text-[10px]" data-i18n="settings_btn_close">CANCELAR</button>
+        <button onclick="saveSettings()" class="px-3 py-1 rounded bg-cyan-tac text-surface-lowest font-bold text-[10px] hover:brightness-110" data-i18n="settings_btn_save">GUARDAR</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="i18n.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

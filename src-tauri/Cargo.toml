@@ -1,0 +1,38 @@
+[package]
+name = "ndi-virtual-camera"
+version = "1.0.0"
+description = "NDI Virtual Camera - Broadcast Suite"
+authors = ["Antigravity Studio"]
+edition = "2021"
+
+[lib]
+name = "ndi_vcam_lib"
+crate-type = ["staticlib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.0", features = ["tray-icon", "custom-protocol"] }
+tauri-plugin-opener = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+libloading = "0.8"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+    "Win32_Security"
+] }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+base64 = "0.22"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "z"
+strip = true

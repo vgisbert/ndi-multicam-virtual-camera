@@ -1,0 +1,207 @@
+"""
+Build Script for NDI Virtual Camera Standalone Windows Executable
+Packages the complete application into a portable, standalone distribution.
+"""
+
+import os
+import sys
+import shutil
+import zipfile
+import subprocess
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+os.chdir(BASE_DIR)
+
+VENV_PY = os.path.join(BASE_DIR, "core", "venv", "Scripts", "python.exe")
+if not os.path.exists(VENV_PY):
+    VENV_PY = sys.executable
+
+print("=" * 65)
+print("   NDI VIRTUAL CAMERA - COMPILADOR A EJECUTABLE (.EXE)")
+print("   Generando distribución portable para Windows 10/11")
+print("=" * 65)
+
+# 1. Crear el archivo spec optimizado
+spec_content = '''# -*- mode: python ; coding: utf-8 -*-
+import os
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
+block_cipher = None
+
+datas = [
+    ('ui', 'ui'),
+]
+try:
+    datas += collect_data_files('pythonnet')
+except Exception:
+    pass
+try:
+    datas += collect_data_files('webview')
+except Exception:
+    pass
+
+binaries = [
+    ('core/lib/Processing.NDI.Lib.x64.dll', 'core/lib'),
+]
+
+hiddenimports = [
+    'clr',
+    'pythonnet',
+    'webview.platforms.winforms',
+    'pyvirtualcam._native_windows_unity_capture',
+    'pyvirtualcam._native_windows_obs',
+    'cv2',
+    'numpy',
+]
+try:
+    hiddenimports += collect_submodules('webview')
+except Exception:
+    pass
+try:
+    hiddenimports += collect_submodules('pyvirtualcam')
+except Exception:
+    pass
+
+a = Analysis(
+    ['core/main.py'],
+    pathex=['.', 'core'],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[
+        'torch', 'torchaudio', 'torchvision', 'transformers', 
+        'scipy', 'nltk', 'surya', 'marker', 'bitsandbytes',
+        'matplotlib', 'pandas', 'IPython', 'jupyter'
+    ],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name='NDI Virtual Camera',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=False,
+    icon='ui/icon.ico',
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name='NDI Virtual Camera',
+)
+'''
+
+spec_path = os.path.join(BASE_DIR, "ndi_virtual_camera.spec")
+with open(spec_path, "w", encoding="utf-8") as f:
+    f.write(spec_content)
+
+print("[1/4] Archivo de especificación PyInstaller preparado.")
+
+# 2. Ejecutar PyInstaller
+print("[2/4] Compilando con PyInstaller (esto puede tardar 1-2 minutos)...")
+cmd = [VENV_PY, "-m", "PyInstaller", "--clean", "-y", spec_path]
+proc = subprocess.run(cmd, capture_output=True, text=True)
+
+if proc.returncode != 0:
+    print("[ERROR] Falló la compilación:")
+    print(proc.stderr[-2000:] if proc.stderr else proc.stdout[-2000:])
+    sys.exit(1)
+
+dist_app_dir = os.path.join(BASE_DIR, "dist", "NDI Virtual Camera")
+if not os.path.exists(dist_app_dir):
+    print(f"[ERROR] No se encontró el directorio de salida: {dist_app_dir}")
+    sys.exit(1)
+
+print("  [OK] Binario compilado exitosamente.")
+
+# 3. Empaquetar driver, config y guía de uso
+print("[3/4] Integrando archivos auxiliares (driver, config.json, instrucciones)...")
+
+# Copiar config.json base
+shutil.copy2(os.path.join(BASE_DIR, "config.json"), os.path.join(dist_app_dir, "config.json"))
+
+# Copiar carpeta driver completa
+dist_driver_dir = os.path.join(dist_app_dir, "driver")
+if os.path.exists(dist_driver_dir):
+    shutil.rmtree(dist_driver_dir)
+shutil.copytree(os.path.join(BASE_DIR, "driver"), dist_driver_dir)
+
+# Crear archivo de instrucciones claro para el nuevo equipo
+readme_text = """=============================================================================
+             NDI VIRTUAL CAMERA - SUITE MULTICÁMARA PORTABLE
+=============================================================================
+
+INSTRUCCIONES PARA EJECUTAR EN UN NUEVO EQUIPO WINDOWS 10 / 11:
+-----------------------------------------------------------------------------
+
+PASO 1 (Solo la primera vez que se use en este ordenador):
+  Entra en la carpeta "driver" y haz clic derecho en:
+      "instalar_driver_multicamara.bat" -> Ejecutar como Administrador.
+  
+  Esto registrará en Windows los dos dispositivos virtuales:
+    - "Camara 1 - Frontal (NDI)"
+    - "Camara 2 - Lateral (NDI)"
+  quedando disponibles de inmediato para OBS, Zoom, ManyCam, Teams, etc.
+
+PASO 2:
+  Haz doble clic en:
+      "NDI Virtual Camera.exe"
+  
+  La aplicación abrirá la consola táctica en pantalla, detectará las cámaras
+  en la red local y activará la transmisión a los dos dispositivos virtuales.
+
+NOTAS IMPORTANTES:
+- Asegúrate de que este equipo esté conectado a la misma red local que las
+  cámaras (IPs 192.168.9.108 y 192.168.9.171). Si las cámaras tienen otras IPs,
+  puedes cambiarlas abriendo el archivo "config.json" con el Bloc de Notas.
+- No es necesario tener Python ni NDI Runtime instalado en el equipo.
+=============================================================================
+"""
+
+with open(os.path.join(dist_app_dir, "INSTRUCCIONES_PRIMER_USO.txt"), "w", encoding="utf-8") as f:
+    f.write(readme_text)
+
+print("  [OK] Archivos auxiliares integrados.")
+
+# 4. Crear archivo ZIP portable listo para pendrive
+print("[4/4] Creando paquete comprimido ZIP para pendrive/red...")
+zip_target = os.path.join(BASE_DIR, "dist", "NDI_Virtual_Camera_Portable.zip")
+if os.path.exists(zip_target):
+    os.remove(zip_target)
+
+with zipfile.ZipFile(zip_target, "w", zipfile.ZIP_DEFLATED) as zipf:
+    for root, _, files in os.walk(dist_app_dir):
+        for file in files:
+            file_path = os.path.join(root, file)
+            arcname = os.path.relpath(file_path, os.path.dirname(dist_app_dir))
+            zipf.write(file_path, arcname)
+
+zip_size_mb = os.path.getsize(zip_target) / (1024 * 1024)
+print(f"  [OK] Paquete ZIP generado: {zip_target} ({zip_size_mb:.1f} MB)")
+
+print("\n" + "=" * 65)
+print("¡COMPILACIÓN COMPLETADA CON ÉXITO!")
+print("Carpeta lista para probar:")
+print(f"  -> {dist_app_dir}")
+print(f"Archivo ZIP para llevar en pendrive:")
+print(f"  -> {zip_target}")
+print("=" * 65)
