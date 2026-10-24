@@ -2,7 +2,7 @@
 
 > **Estado del proyecto:** Suite Multicámara DirectShow (Operativa)  
 > **Sistema Operativo Objetivo:** Windows 10 (64 bits, compatible con Windows 11)  
-> **Hardware Validado:** 2 Cámaras PTZ Nuroum V403 (`192.168.9.108` y `192.168.9.171`) + Fuentes NDI en red local.
+> **Hardware Validado:** 2 Cámaras PTZ Nuroum V403 (múltiples unidades en LAN) + Fuentes NDI en red local.
 
 ---
 
@@ -13,9 +13,10 @@ Para permitir que el realizador opere **un solo programa de producción (OBS Stu
 ```mermaid
 flowchart TD
     subgraph LAN["Red Local (LAN Gigabit)"]
-        Cam1["Cámara 1 (Nuroum V403)<br/>192.168.9.108:5961<br/>MAC: 98:6E:E8:5F:39:54<br/>NDI|HX 1080p 30fps"]
-        Cam2["Cámara 2 (Nuroum V403)<br/>192.168.9.171:5961<br/>MAC: 02:00:C0:A8:09:AB<br/>NDI|HX 1080p 30fps"]
+        Cam1["Cámara 1 (Nuroum V403)<br/>192.168.X.10:5961<br/>MAC: 98:6E:E8:XX:XX:01<br/>NDI|HX 1080p 30fps"]
+        Cam2["Cámara 2 (Nuroum V403)<br/>192.168.X.20:5961<br/>MAC: 98:6E:E8:XX:XX:02<br/>NDI|HX 1080p 30fps"]
     end
+
 
     subgraph Core["NDI Virtual Camera (Motor en Background)"]
         Daemon["Discovery Daemon<br/>(mDNS 5353 + ARP iphlpapi.dll)"]
@@ -76,8 +77,8 @@ Para habilitar **2 o más cámaras virtuales simultáneas e independientes**:
 ## 3. Resolución de la Colisión de Nombres NDI
 
 Ambas cámaras Nuroum V403 emiten por defecto con el nombre idéntico `"LOCALHOST (Nuroum Cam V403-)"`:
-1. El demonio resuelve la dirección física MAC real (`98:6E:E8:5F:39:54`) con `iphlpapi.SendARP`.
-2. Cada flujo se conecta por socket unívoco en `p_url_address` (`192.168.9.108:5961` y `192.168.9.171:5961`), garantizando que cada cámara alimenta exclusivamente su correspondiente canal virtual.
+1. El demonio resuelve la dirección física MAC real mediante `iphlpapi.SendARP`.
+2. Cada flujo se conecta por socket unívoco en `p_url_address` (`<IP_CAM_1>:5961` y `<IP_CAM_2>:5961`), garantizando que cada cámara alimenta exclusivamente su correspondiente canal virtual.
 
 ---
 
@@ -98,8 +99,9 @@ Ambas cámaras Nuroum V403 emiten por defecto con el nombre idéntico `"LOCALHOS
 
 ### 5.1. Identificación del Hardware Físico
 * **Modelo:** Nuroum V403 / Hamedal Cam V403 (`device_type: 033`)
-* **Cámara 1:** IP `192.168.9.108` | MAC `98:6E:E8:5F:39:54` | S/N `AW19MRAB8AAAN*****`
-* **Cámara 2:** IP `192.168.9.171` | MAC `98:6E:E8:5F:36:90` | S/N `AW19MRAB8AAAA*****`
+* **Cámara 1:** IP `<IP_CAM_1>` | MAC `98:6E:E8:XX:XX:01` | S/N `AW19XXXXXXXXXX`
+* **Cámara 2:** IP `<IP_CAM_2>` | MAC `98:6E:E8:XX:XX:02` | S/N `AW19XXXXXXXXXX`
+
 
 ### 5.2. Configuración Esencial en NearSync para Evitar Movimientos No Deseados
 Para garantizar que las cámaras **permanezcan fijas y no se muevan por su cuenta** al recibir corriente o al conectar la señal de vídeo NDI, la utilidad oficial **NearSync** (`Device Setting`) debe configurarse con los siguientes parámetros:
@@ -143,8 +145,8 @@ Al comparar ejecuciones en Windows 10 y Windows 11, pueden observarse lecturas d
 
 ### 6.3. Resolución de Direcciones MAC (ARP vs. Sintética Fallback)
 En las tarjetas de cámara de la interfaz se refleja la dirección física:
-* **En Windows 10:** Puede observarse `02:00:C0:A8:09:6C`. Es una dirección MAC sintética (falsa) que el código genera como mecanismo de contingencia cuando la API nativa de Windows `iphlpapi.SendARP` no recibe respuesta directa (frecuente si existe aislamiento de clientes en el punto de acceso, enrutamiento intermedio o firewalls locales).
-* **En Windows 11:** Aparece la dirección física real por hardware `98:6E:E8:5F:39:54`, lo que confirma que el descubrimiento ARP a nivel de Capa 2 (enlace de datos) se ejecutó con éxito y sin barreras de red.
+* **En Windows 10:** Puede observarse `02:00:C0:A8:XX:XX`. Es una dirección MAC sintética (falsa) que el código genera como mecanismo de contingencia cuando la API nativa de Windows `iphlpapi.SendARP` no recibe respuesta directa (frecuente si existe aislamiento de clientes en el punto de acceso, enrutamiento intermedio o firewalls locales).
+* **En Windows 11:** Aparece la dirección física real por hardware (prefijo de fabricante `98:6E:E8:XX:XX:XX`), lo que confirma que el descubrimiento ARP a nivel de Capa 2 (enlace de datos) se ejecutó con éxito y sin barreras de red.
 
 ### 6.4. Impacto en la Fluidez y Emisión en Directo
 En un flujo de vídeo estándar a 30 FPS, cada fotograma dura **33.3 ms**. Una latencia de red de **11.4 ms** representa apenas un tercio de un fotograma, por lo que se sitúa ampliamente en el umbral de **tiempo real óptimo**, garantizando una sincronización perfecta sin saltos ni congelaciones tanto en Windows 10 como en Windows 11.
@@ -162,7 +164,7 @@ En la arquitectura actual de esta suite, los dispositivos virtuales expuestos en
 La cámara Nuroum V403 cuenta con un array de micrófonos estéreo duales con cancelación de ruido ambiental orientados a conferencias (*huddle rooms*):
 * **Baja fidelidad para producción:** Al estar integrados en el chasis de la cámara (frecuentemente montada en techo, trípode o pared a varios metros del orador), el audio captado sufre de reverberación de sala, distancia acústica y compresión agresiva del algoritmo de supresión de ruido.
 * **Limitación Crítica del Firmware (Comprobación Empírica):**  
-  Se ha realizado un sondeo de red a bajo nivel conectando directamente con la API C de NDI SDK v6 tanto a la Cámara 1 (`192.168.9.108`) como a la Cámara 2 (`192.168.9.171`).  
+  Se ha realizado un sondeo de red a bajo nivel conectando directamente con la API C de NDI SDK v6 a ambas cámaras de prueba en la red local.  
   **Resultado:** Durante la emisión continua se recibieron cerca de 150 fotogramas de vídeo por cámara y **0 paquetes de audio NDI (`NDILIB_FRAME_TYPE_AUDIO = 0`)**.  
   Esto demuestra que el firmware actual de las cámaras Nuroum V403 **no multiplexa ni emite paquetes de audio en su flujo de red NDI|HX**. Los micrófonos integrados operan exclusivamente por USB (UAC) cuando la cámara se conecta directamente por cable USB al PC, pero el procesador de la cámara no los incluye en la transmisión por red IP.
 * **No apto para máster de emisión:** Para directos, podcasts o streaming profesional, la captación debe delegarse obligatoriamente en microfonía dedicada (solapas inalámbricas, microfonía dinámica o mesa de mezclas conectada por interfaz USB al PC).
@@ -187,8 +189,9 @@ Si en el futuro se requiriese disponer de un micrófono virtual seleccionable en
    * **Paso 3 (Consumo en la App):** En Zoom, Teams u OBS, el usuario selecciona en el desplegable de micrófono el dispositivo **`CABLE Output`**, disponiendo de la voz de la cámara en perfecta sincronía.
 
 ### 7.5. Conclusión Técnica y Descarte de Audio NDI en el Firmware
-Tras la verificación empírica con sondeo de sockets C NDI en ambas cámaras (`192.168.9.108` y `192.168.9.171`), se constató que el microcódigo de las cámaras Nuroum V403 emite 0 paquetes de audio por la red local (`NDILIB_FRAME_TYPE_AUDIO = 0`).  
+Tras la verificación empírica con sondeo de sockets C NDI en ambas cámaras, se constató que el microcódigo de las cámaras Nuroum V403 emite 0 paquetes de audio por la red local (`NDILIB_FRAME_TYPE_AUDIO = 0`).  
 Por consiguiente, el proyecto se mantiene estrictamente en su alcance de diseño óptimo: **emisión multicámara DirectShow exclusiva de vídeo ultra-ligera y de alto rendimiento**, evitando complejidades y dependencias de audio innecesarias en el equipo anfitrión, y delegando la captación de sonido en interfaces USB o microfonía de producción dedicada.
+
 
 
 

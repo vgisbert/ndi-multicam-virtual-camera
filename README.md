@@ -15,7 +15,7 @@
    Las herramientas oficiales de NDI y los drivers estándar (`obs-virtualcam`) solo permiten emitir una única cámara virtual global a la vez. Este proyecto integra un motor de memoria compartida desacoplada basado en DirectShow (`UnityCapture`) que expone **múltiples cámaras NDI simultáneas e independientes en Windows** (`Cámara 1 - Frontal`, `Cámara 2 - Lateral`, etc.) para consumirlas simultáneamente en OBS Studio, ManyCam, vMix, Zoom o Teams.
 
 2. **Colisión de Nombres NDI Duplicados:**  
-   Resuelve el problema de cámaras NDI de bajo coste (como las *Nuroum V403* / *Hamedal*) que emiten por defecto con el nombre idéntico `LOCALHOST (Nuroum Cam V403-)`. El sistema resuelve la dirección física MAC real (`iphlpapi.SendARP`) a nivel de Capa 2 y asocia cada flujo NDI por socket y puerto exacto (`192.168.9.108:5961`, `192.168.9.171:5961`), garantizando que cada cámara alimenta su canal virtual sin mezclas.
+   Resuelve el problema de cámaras NDI de bajo coste (como las *Nuroum V403* / *Hamedal*) que emiten por defecto con el nombre idéntico `LOCALHOST (Nuroum Cam V403-)`. El sistema resuelve la dirección física MAC real (`iphlpapi.SendARP`) a nivel de Capa 2 y asocia cada flujo NDI por socket y puerto exacto (`<IP_CAM_1>:5961`, `<IP_CAM_2>:5961`), garantizando que cada cámara alimenta su canal virtual sin mezclas.
 
 3. **Arquitectura Dual:**  
    * **Entorno de desarrollo Python:** Servidor HTTP local + GUI en PyWebView (`arrancar.bat`).
@@ -28,9 +28,10 @@
 ```mermaid
 flowchart TD
     subgraph LAN["Red Local (LAN Gigabit / Wi-Fi)"]
-        Cam1["Cámara 1 (PTZ NDI)<br/>192.168.9.108:5961<br/>1080p 30fps"]
-        Cam2["Cámara 2 (PTZ NDI)<br/>192.168.9.171:5961<br/>1080p 30fps"]
+        Cam1["Cámara 1 (PTZ NDI)<br/>192.168.X.10:5961<br/>1080p 30fps"]
+        Cam2["Cámara 2 (PTZ NDI)<br/>192.168.X.20:5961<br/>1080p 30fps"]
     end
+
 
     subgraph Core["NDI Virtual Camera Engine"]
         Daemon["Discovery Daemon<br/>(mDNS 5353 + ARP iphlpapi.dll)"]

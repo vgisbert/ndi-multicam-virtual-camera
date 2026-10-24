@@ -32,8 +32,8 @@ flowchart TD
 * [x] **2.1. Resolución de Nombres Duplicados (`core/discovery.py`):**
   * Asignación por hardware MAC (`iphlpapi.SendARP`) para diferenciar las dos cámaras Nuroum V403.
 * [x] **2.2. Workers de Ingesta NDI en Hilos Independientes (`core/video_pipeline.py`):**
-  * Hilo A: `192.168.9.108:5961` $\rightarrow$ Ingesta 1080p30 Full HD.
-  * Hilo B: `192.168.9.171:5961` $\rightarrow$ Ingesta 1080p30 Full HD.
+  * Hilo A: `<IP_CAM_1>:5961` $\rightarrow$ Ingesta 1080p30 Full HD.
+  * Hilo B: `<IP_CAM_2>:5961` $\rightarrow$ Ingesta 1080p30 Full HD.
 
 ---
 
