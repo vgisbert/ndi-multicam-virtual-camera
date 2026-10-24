@@ -149,3 +149,48 @@ En las tarjetas de cámara de la interfaz se refleja la dirección física:
 ### 6.4. Impacto en la Fluidez y Emisión en Directo
 En un flujo de vídeo estándar a 30 FPS, cada fotograma dura **33.3 ms**. Una latencia de red de **11.4 ms** representa apenas un tercio de un fotograma, por lo que se sitúa ampliamente en el umbral de **tiempo real óptimo**, garantizando una sincronización perfecta sin saltos ni congelaciones tanto en Windows 10 como en Windows 11.
 
+---
+
+## 7. Tratamiento del Audio: Flujo NDI, Drivers Virtuales y Sincronización
+
+### 7.1. Estado Actual del Proyecto: Emisión Exclusiva de Vídeo
+En la arquitectura actual de esta suite, los dispositivos virtuales expuestos en Windows (`Camara 1 - Frontal (NDI)` y `Camara 2 - Lateral (NDI)`) **transmiten exclusivamente señal de vídeo**:
+1. **Filtro DirectShow Dedicado:** El driver utilizado (`UnityCaptureFilter64.dll`) es un filtro DirectShow perteneciente a la categoría `CLSID_VideoInputDeviceCategory`. No registra ni implementa pines ni endpoints de audio ante el subsistema multimedia de Windows.
+2. **Filtrado en Pipeline:** Tanto en el motor nativo Rust ([`pipeline.rs`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/src-tauri/src/pipeline.rs#L58-L72)) como en el entorno Python, el receptor NDI filtra explícitamente tramas de tipo `NDILIB_FRAME_TYPE_VIDEO`. Las tramas de audio que viajan por el flujo NDI de la red se descartan deliberadamente para optimizar el rendimiento y el consumo de CPU.
+
+### 7.2. Características y Limitaciones del Audio Integrado (Nuroum V403)
+La cámara Nuroum V403 cuenta con un array de micrófonos estéreo duales con cancelación de ruido ambiental orientados a conferencias (*huddle rooms*):
+* **Baja fidelidad para producción:** Al estar integrados en el chasis de la cámara (frecuentemente montada en techo, trípode o pared a varios metros del orador), el audio captado sufre de reverberación de sala, distancia acústica y compresión agresiva del algoritmo de supresión de ruido.
+* **Limitación Crítica del Firmware (Comprobación Empírica):**  
+  Se ha realizado un sondeo de red a bajo nivel conectando directamente con la API C de NDI SDK v6 tanto a la Cámara 1 (`192.168.9.108`) como a la Cámara 2 (`192.168.9.171`).  
+  **Resultado:** Durante la emisión continua se recibieron cerca de 150 fotogramas de vídeo por cámara y **0 paquetes de audio NDI (`NDILIB_FRAME_TYPE_AUDIO = 0`)**.  
+  Esto demuestra que el firmware actual de las cámaras Nuroum V403 **no multiplexa ni emite paquetes de audio en su flujo de red NDI|HX**. Los micrófonos integrados operan exclusivamente por USB (UAC) cuando la cámara se conecta directamente por cable USB al PC, pero el procesador de la cámara no los incluye en la transmisión por red IP.
+* **No apto para máster de emisión:** Para directos, podcasts o streaming profesional, la captación debe delegarse obligatoriamente en microfonía dedicada (solapas inalámbricas, microfonía dinámica o mesa de mezclas conectada por interfaz USB al PC).
+
+
+### 7.3. Utilidad Técnica: Audio de Referencia para Sincronización (*Scratch Audio*)
+Aunque la calidad no sea adecuada para la emisión final, la captura del audio NDI tiene un alto valor técnico para **sincronización de pistas (*Warping / Waveform Alignment*)**:
+* En entornos de postproducción o multicámara con grabación local, la pista de audio captada por la cámara viaja temporalmente sincronizada con los fotogramas del sensor de vídeo.
+* Permite al software de edición (DaVinci Resolve, Premiere Pro, etc.) o a herramientas automáticas de alineación correlacionar la forma de onda de la cámara con las pistas de los micrófonos de estudio de alta calidad, alineando vídeo y audio al milisegundo de forma automática.
+
+### 7.4. Arquitectura para un Micrófono Virtual en Windows (Zoom / Teams)
+Si en el futuro se requiriese disponer de un micrófono virtual seleccionable en aplicaciones de videollamada como Zoom, Microsoft Teams o Google Meet, deben considerarse los siguientes aspectos de arquitectura:
+
+1. **Separación de Subsistemas en Windows:**  
+   Windows no permite que un driver DirectShow de captura de vídeo entregue audio a aplicaciones de usuario. Incluso las webcams USB físicas se registran como dos dispositivos independientes a nivel de bus: un dispositivo UVC (*USB Video Class*) y un dispositivo UAC (*USB Audio Class*).
+2. **Requisitos de Driver de Audio del Kernel:**  
+   Crear un dispositivo de captura de audio virtual nativo requiere desarrollar un driver WDM / Audio Endpoint de Windows con firma de código comercial validada por Microsoft (WHQL / EV). Desarrollar un driver de audio propio desde cero resulta poco práctico y propenso a problemas de compatibilidad.
+3. **Flujo de Integración Recomendado (con Driver Externo Firmado):**  
+   Para implementar esta funcionalidad sin complicaciones de firmas del kernel:
+   * **Paso 1 (Ingesta NDI):** Habilitar en `pipeline.rs` la lectura de tramas `NDILIB_FRAME_TYPE_AUDIO`, obteniendo los bloques PCM (flotantes a 48 kHz interleaved).
+   * **Paso 2 (Salida hacia Cable Virtual):** Mediante librerías de audio como `cpal` (Rust) o `sounddevice` (Python), enrutar ese flujo de audio hacia la entrada de un driver de audio virtual estándar ya firmado, como **VB-Audio Virtual Cable** (`CABLE Input`).
+   * **Paso 3 (Consumo en la App):** En Zoom, Teams u OBS, el usuario selecciona en el desplegable de micrófono el dispositivo **`CABLE Output`**, disponiendo de la voz de la cámara en perfecta sincronía.
+
+### 7.5. Conclusión Técnica y Descarte de Audio NDI en el Firmware
+Tras la verificación empírica con sondeo de sockets C NDI en ambas cámaras (`192.168.9.108` y `192.168.9.171`), se constató que el microcódigo de las cámaras Nuroum V403 emite 0 paquetes de audio por la red local (`NDILIB_FRAME_TYPE_AUDIO = 0`).  
+Por consiguiente, el proyecto se mantiene estrictamente en su alcance de diseño óptimo: **emisión multicámara DirectShow exclusiva de vídeo ultra-ligera y de alto rendimiento**, evitando complejidades y dependencias de audio innecesarias en el equipo anfitrión, y delegando la captación de sonido en interfaces USB o microfonía de producción dedicada.
+
+
+
+
+
