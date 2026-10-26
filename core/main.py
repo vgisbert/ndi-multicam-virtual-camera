@@ -97,12 +97,21 @@ class TacticalHttpHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/status":
             vcam_status = vcam_manager.get_status() if vcam_manager else {}
+            rec_status = video_pipeline.get_recording_status() if video_pipeline else {"is_recording": False}
             data = {
                 "status": "nominal",
                 "vcam": vcam_status,
-                "is_pinned": is_window_pinned
+                "is_pinned": is_window_pinned,
+                "monitoring_enabled": video_pipeline.is_monitoring_enabled() if video_pipeline else True,
+                "preview_fps": video_pipeline.preview_fps if video_pipeline else 4,
+                "recording": rec_status
             }
             self._send_json(data)
+            return
+
+        elif path == "/api/recording/status":
+            rec_status = video_pipeline.get_recording_status() if video_pipeline else {"is_recording": False}
+            self._send_json(rec_status)
             return
 
         elif path == "/api/cameras":
@@ -123,6 +132,7 @@ class TacticalHttpHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self):
+        global is_window_pinned, webview_window
         parsed = urlparse(self.path)
         path = parsed.path
         length = int(self.headers.get("Content-Length", 0))
@@ -150,7 +160,6 @@ class TacticalHttpHandler(SimpleHTTPRequestHandler):
                 return
 
         elif path == "/api/pin":
-            global is_window_pinned, webview_window
             is_window_pinned = not is_window_pinned
             if webview_window:
                 try:
@@ -160,18 +169,146 @@ class TacticalHttpHandler(SimpleHTTPRequestHandler):
             self._send_json({"success": True, "is_pinned": is_window_pinned})
             return
 
+        elif path == "/api/monitoring/toggle":
+            if video_pipeline:
+                new_state = not video_pipeline.is_monitoring_enabled()
+                video_pipeline.set_monitoring(new_state)
+                self._send_json({"success": True, "monitoring_enabled": new_state})
+                return
+            self._send_json({"success": False, "error": "Pipeline no disponible"})
+            return
+
+        elif path == "/api/monitoring/set":
+            if video_pipeline:
+                enabled = bool(payload.get("enabled", True))
+                video_pipeline.set_monitoring(enabled)
+                self._send_json({"success": True, "monitoring_enabled": enabled})
+                return
+            self._send_json({"success": False, "error": "Pipeline no disponible"})
+            return
+
+        elif path == "/api/window/resize":
+            camera_count = int(payload.get("camera_count", 1))
+            target_h = payload.get("height")
+            if webview_window:
+                try:
+                    if not target_h:
+                        if camera_count <= 0:
+                            target_h = 280
+                        elif camera_count == 1:
+                            target_h = 395
+                        elif camera_count == 2:
+                            target_h = 665
+                        else:
+                            target_h = min(880, 140 + camera_count * 265)
+
+                    cur_w = 420
+                    if hasattr(webview_window, 'width') and webview_window.width:
+                        cur_w = webview_window.width
+                    webview_window.resize(cur_w, target_h)
+                    self._send_json({"success": True, "height": target_h})
+                    return
+                except Exception as e:
+                    print(f"[WARN] Error al redimensionar ventana: {e}")
+            self._send_json({"success": False, "error": "Ventana no disponible"})
+            return
+
+        elif path == "/api/window/visibility":
+            is_visible = bool(payload.get("visible", True))
+            if video_pipeline:
+                video_pipeline.set_window_visibility(is_visible)
+                self._send_json({"success": True, "visible": is_visible})
+                return
+            self._send_json({"success": False, "error": "Pipeline no disponible"})
+            return
+
+        elif path == "/api/recording/toggle":
+            if video_pipeline:
+                custom_dir = payload.get("output_dir") or app_config.get("recording_dir")
+                if video_pipeline.recorder_manager.is_recording:
+                    saved = video_pipeline.stop_recording()
+                    status = video_pipeline.get_recording_status()
+                    status["saved_files"] = saved
+                    self._send_json({"success": True, "action": "stopped", "status": status})
+                else:
+                    ok = video_pipeline.start_recording(custom_dir=custom_dir)
+                    status = video_pipeline.get_recording_status()
+                    self._send_json({"success": ok, "action": "started", "status": status})
+                return
+            self._send_json({"success": False, "error": "Pipeline no disponible"})
+            return
+
+        elif path == "/api/recording/stop":
+            if video_pipeline:
+                saved = video_pipeline.stop_recording()
+                status = video_pipeline.get_recording_status()
+                status["saved_files"] = saved
+                self._send_json({"success": True, "action": "stopped", "status": status})
+                return
+            self._send_json({"success": False, "error": "Pipeline no disponible"})
+            return
+
+        elif path == "/api/browse-folder":
+            selected_dir = ""
+            if webview_window:
+                try:
+                    import webview
+                    res = webview_window.create_file_dialog(webview.FOLDER_DIALOG)
+                    if res and len(res) > 0:
+                        selected_dir = res[0]
+                except Exception as e:
+                    print(f"[UI] Error al abrir dialogo de carpeta: {e}", flush=True)
+            if not selected_dir:
+                try:
+                    import tkinter as tk
+                    from tkinter import filedialog
+                    root = tk.Tk()
+                    root.withdraw()
+                    root.attributes('-topmost', True)
+                    selected_dir = filedialog.askdirectory(title="Seleccionar carpeta de grabaciones")
+                    root.destroy()
+                except Exception:
+                    pass
+            self._send_json({"success": bool(selected_dir), "directory": selected_dir or ""})
+            return
+
         elif path == "/api/config":
             vcam_name = payload.get("virtual_camera_name")
             extra_ips = payload.get("extra_ips")
             aliases = payload.get("aliases")
+            preview_fps = payload.get("preview_fps")
+            rec_dir = payload.get("recording_dir")
 
             if vcam_name:
                 app_config["virtual_camera_name"] = vcam_name
+            if rec_dir is not None:
+                app_config["recording_dir"] = rec_dir.strip()
+            if preview_fps is not None:
+                app_config["preview_fps"] = int(preview_fps)
+                if video_pipeline:
+                    video_pipeline.set_preview_fps(int(preview_fps))
             if extra_ips is not None:
                 if "network" not in app_config:
                     app_config["network"] = {}
                 app_config["network"]["ndi_extra_ips"] = extra_ips
+                if discovery_daemon:
+                    discovery_daemon.update_extra_ips(extra_ips)
             if aliases:
+                # Chequeo en backend: evitar que se asigne el mismo nombre a dos cámaras distintas
+                if discovery_daemon and getattr(discovery_daemon, "cameras", None):
+                    cam_map = {}
+                    for cam_id, cam in discovery_daemon.cameras.items():
+                        alias_val = aliases.get(cam.cam_id) or aliases.get(cam.ip) or aliases.get(cam.url_address)
+                        if alias_val:
+                            alias_norm = alias_val.strip().lower()
+                            if alias_norm in cam_map and cam_map[alias_norm] != cam_id:
+                                self._send_json({
+                                    "success": False,
+                                    "error": f"Nombre duplicado '{alias_val}': cada cámara debe tener un nombre único."
+                                })
+                                return
+                            cam_map[alias_norm] = cam_id
+
                 if "camera_aliases" not in app_config:
                     app_config["camera_aliases"] = {}
                 app_config["camera_aliases"].update(aliases)
@@ -211,11 +348,11 @@ def start_http_server(port: int = 8765):
 def main():
     global discovery_daemon, vcam_manager, video_pipeline, webview_window, is_window_pinned
 
-    print("=" * 65)
-    print("   NDI VIRTUAL CAMERA - TACTICAL BROADCAST SUITE")
-    print("   Compatible con Windows 10 / NDI 6 / DirectShow Video Capture")
-    print("=" * 65)
-    print()
+    print("=" * 65, flush=True)
+    print("   NDI VIRTUAL CAMERA - TACTICAL BROADCAST SUITE", flush=True)
+    print("   Compatible con Windows 10 / NDI 6 / DirectShow Video Capture", flush=True)
+    print("=" * 65, flush=True)
+    print(flush=True)
 
     # 1. Load configuration
     cfg = load_config()
@@ -232,7 +369,9 @@ def main():
     vcam_manager.start_all(discovery_daemon.get_all_cameras())
 
     # 4. Initialize Video Pipeline
-    video_pipeline = VideoPipeline(discovery_daemon, vcam_manager)
+    preview_fps = cfg.get("preview_fps", 4)
+    recording_dir = cfg.get("recording_dir")
+    video_pipeline = VideoPipeline(discovery_daemon, vcam_manager, preview_fps=preview_fps, recording_dir=recording_dir)
     video_pipeline.start()
 
     # 5. Start embedded UI server
@@ -245,16 +384,31 @@ def main():
         try:
             import webview
             print("[INFO] Abriendo ventana nativa de escritorio (Microsoft Edge WebView2)...")
+            initial_cams = len([c for c in discovery_daemon.get_all_cameras() if c.get("is_online")]) if discovery_daemon else 1
+            initial_h = 395 if initial_cams <= 1 else 665
             webview_window = webview.create_window(
                 title="Cámara Virtual NDI",
                 url=f"http://127.0.0.1:{port}",
                 width=420,
-                height=640,
+                height=initial_h,
                 resizable=True,
                 frameless=False,
                 easy_drag=True,
                 on_top=False
             )
+
+            # Auto-pausar monitorización al minimizar ventana
+            def _on_window_minimized():
+                if video_pipeline:
+                    video_pipeline.set_window_visibility(False)
+
+            def _on_window_restored():
+                if video_pipeline:
+                    video_pipeline.set_window_visibility(True)
+
+            webview_window.events.minimized += _on_window_minimized
+            webview_window.events.restored += _on_window_restored
+
             webview.start()
         except Exception as e:
             print(f"[WARN] No se pudo lanzar la ventana webview nativa: {e}")

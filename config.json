@@ -3,6 +3,8 @@
   "virtual_camera_name": "NDI Virtual Camera",
   "selected_source": "",
   "auto_start_virtual_cam": true,
+  "preview_fps": 4,
+  "recording_dir": "",
   "resolution": {
     "width": 1920,
     "height": 1080,
@@ -17,7 +19,9 @@
     "HAMEDAL-V403-2 (Channel 1)": "Cámara 2 - Lateral",
     "LOCALHOST (Nuroum Cam V403-)": "Cámara 1 - Frontal",
     "cam-986ee85f3954": "Cám 1",
-    "cam-986ee85f3690": "Cám 2"
+    "cam-986ee85f3690": "Cám 2",
+    "cam-0200c0a8096c": "Cám 1",
+    "cam-0200c0a809ab": "Cám 2"
   },
   "network": {
     "preferred_nic": "",

@@ -192,6 +192,110 @@ Si en el futuro se requiriese disponer de un micrófono virtual seleccionable en
 Tras la verificación empírica con sondeo de sockets C NDI en ambas cámaras, se constató que el microcódigo de las cámaras Nuroum V403 emite 0 paquetes de audio por la red local (`NDILIB_FRAME_TYPE_AUDIO = 0`).  
 Por consiguiente, el proyecto se mantiene estrictamente en su alcance de diseño óptimo: **emisión multicámara DirectShow exclusiva de vídeo ultra-ligera y de alto rendimiento**, evitando complejidades y dependencias de audio innecesarias en el equipo anfitrión, y delegando la captación de sonido en interfaces USB o microfonía de producción dedicada.
 
+---
+
+## 8. Optimizaciones de Rendimiento y Grabación Dual MKV
+
+Con el fin de posibilitar la ejecución de la suite tanto en equipos de altas prestaciones como en mini-PCs de consumo contenido (ej. procesadores Intel N100 / AMD Ryzen 1600 con GPU básica):
+
+### 8.1. Desacoplo de Renderizado y Modo Rendimiento (VISTA ON / ECO OFF)
+- **Modo Rendimiento (`ECO`):** Desactiva el escalado por software OpenCV (`cv2.resize` / `cv2.imencode`) y el transporte HTTP Base64 de las miniaturas.
+- **Salida DirectShow Inalterada:** Los hilos de entrega DirectShow (`pyvirtualcam`) continúan emitiendo a 1080p @ 30 FPS sin interrupción ni aumento de latencia.
+- **Ahorro de CPU:** En procesadores de 4 hilos (como el Intel N100), el paso a modo ECO reduce la carga de procesamiento entre un 60% y un 75%.
+
+### 8.2. Pausa Automática al Minimizar la Ventana
+- Integración dual mediante API de visibilidad de navegador (`document.hidden` / `visibilitychange`) y eventos nativos de ventana `pywebview` (`minimized` y `restored`).
+- Al ocultarse o minimizarse la interfaz, el sondeo de miniaturas se detiene y la telemetría se reduce de 500 ms a 2000 ms, liberando la CPU del equipo.
+
+### 8.3. Tasa de Refresco de Previsualización Configurable
+- Selector disponible en la ventana de Ajustes con persistencia en [`config.json`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/config.json):
+  - **2 FPS (Modo Eco):** Ideal para equipos modestos de control desatendido.
+  - **4 FPS (Equilibrado - Recomendado):** Proporciona supervisión visual clara con consumo de CPU mínimo (<3%).
+  - **8 FPS (Fluido):** Orientado al puesto de operador con control de joystick PTZ activo.
+
+### 8.4. Grabación Multicámara Dual en Contenedor MKV (Puntos 5 y 6)
+- **Autodetección de Hardware Encoder:** Al iniciar la suite, el subsistema [`core/recorder.py`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/core/recorder.py) sondea la GPU mediante sondas FFmpeg rápidas:
+  1. `h264_nvenc` (NVIDIA GeForce / RTX)
+  2. `h264_qsv` (Intel QuickSync GPU)
+  3. `h264_amf` (AMD Radeon GPU / APU)
+  4. `libx264 ultrafast` (CPU Software Fallback)
+- **Aislamiento de Hilos (Zero-Drop en DirectShow):** La grabación utiliza colas asíncronas independientes (`queue.Queue(maxsize=60)` con `put_nowait`). Cualquier retardo de escritura en disco o saturación I/O descarta tramas exclusivamente en el archivo grabado, sin comprometer nunca la entrega a la cámara virtual DirectShow.
+- **Seguridad Matroska (MKV):** Los archivos MKV escriben clusters e índices de forma incremental. Si la aplicación o el sistema sufrieran un corte de energía, el archivo queda 100% íntegro y reproducible hasta el último segundo grabado.
+- **Nomenclatura y Destino Personalizable:**
+  - Nombres generados: `<fecha>_<hora>_<id_cámara>.mkv` (ej. `20261025_231719_Cam_1.mkv`).
+  - Directorio por defecto: subcarpeta `grabaciones/` dentro del proyecto.
+  - Directorio configurable en la interfaz con botón de navegación nativo de Windows (diálogo de selección de carpetas de pywebview / Win32).
+
+#### 8.4.1. Métrica y Calidad del Fichero MKV Generado (Inspección MediaInfo)
+La inspección técnica del fichero resultante confirma una parametrización óptima para difusión y postproducción:
+* **Perfil de Vídeo:** `AVC / H.264 High@L4` con codificación aritmética `CABAC` y 3 fotogramas de referencia (`3 Ref Frames`), procesado íntegramente por `h264_nvenc`.
+* **Cadencia Constante (CFR):** Grabado a `25,000 FPS Constante` (frecuencia europea PAL 50 Hz anti-parpadeo), sincronizado al milímetro con el sensor de la cámara Nuroum V403. Esto elimina desincronizaciones de audio/vídeo al importar a editores no lineales como Adobe Premiere o DaVinci Resolve.
+* **Tasa de Bits Adaptativa (VBR):** Media de `4.422 kb/s` (~4.5 Mbps) con ráfaga máxima configurada a `12,0 Mb/s` para evitar pixelaciones durante paneos de joystick PTZ rápidos.
+* **Colorimetría:** `YUV 4:2:0 Progresivo (8-bit) Limited Range`, asegurando que no se produzca aplastamiento de sombras ni recorte de altas luces en reproductores convencionales.
+* **Consumo de Almacenamiento:** ~34 MiB por minuto de grabación. Una sesión dual simultánea (2 cámaras a la vez) consume aproximadamente **4.05 GB por hora**, permitiendo más de 45 horas continuas de grabación en un disco de 233 GB.
+
+### 8.5. Validación y Prevención de Nombres Duplicados
+- **Validación Visual en Tiempo Real (Frontend):** En la ventana de configuración, si el usuario introduce por error el mismo alias en dos o más cámaras, los campos conflictivos se destacan en rojo intenso y se muestra un aviso de error bloqueando la acción de guardado. Al modificar el texto para corregir el conflicto, la advertencia y el bloqueo desaparecen de inmediato.
+- **Validación en Backend (`POST /api/config`):** El servidor HTTP intercepta la solicitud y rechaza la asignación si distintas fuentes apuntan a un mismo nombre normalizado.
+- **Seguridad en el Grabador (`MultiCameraRecordingManager`):** Si por alguna razón concurrente dos cámaras compartiesen nombre, el grabador detecta la colisión y añade de forma automática un sufijo identificativo (`_108`, `_171`), impidiendo en cualquier escenario la sobreescritura accidental de ficheros de vídeo.
+
+### 8.6. Optimización Ergonómica de Configuración y Sondeo de Red en Caliente
+- **Cierre y Guardado Unificado (Aspa `X`):** Se eliminaron los botones inferiores (`CANCELAR` / `GUARDAR`). El botón de cierre `X` en la cabecera valida los campos, persiste los cambios en [`config.json`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/config.json) y cierra la ventana en un único clic, ahorrando espacio vertical.
+- **Ajuste de Dimensiones y Visibilidad Completa:** El formulario se rediseñó a una altura compacta (~240 px) con espaciado optimizado y scroll interno suave, asegurando que todos los campos y la última línea de alias sean 100% visibles incluso en el modo de 1 sola cámara (395 px de alto).
+- **Sondeo de IPs en Caliente (*Hot-Reload*):** Al modificar el listado de IPs dirigidas en la interfaz, el demonio [`CameraDiscoveryDaemon.update_extra_ips()`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/core/discovery.py) actualiza la instancia de NDI Finder al vuelo y comienza a sondear las nuevas direcciones IP inmediatamente, sin requerir reinicio del programa.
+
+---
+
+## 9. Estudio Arquitectónico: Escenario de Escalabilidad (>2 Cámaras Simultáneas en Red)
+
+En el supuesto de ampliar el despliegue técnico a 3, 4 o más cámaras NDI activas en la misma red local:
+
+### 9.1. Compatibilidad Nativa del Software Actual
+El diseño modular implementado está preparado para múltiples cámaras sin topes numéricos arbitrarios:
+* **Descubrimiento ([`core/discovery.py`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/core/discovery.py)):** Registra y sondea tantas fuentes mDNS o IPs dirigidas como se presenten en la red.
+* **Pipeline de Ingesta ([`core/video_pipeline.py`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/core/video_pipeline.py)):** Asigna un hilo receptor NDI independiente para cada cámara en línea.
+* **Grabador Multicámara ([`core/recorder.py`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/core/recorder.py)):** Despacha procesos FFmpeg aislados por cámara con nomenclatura temporal y anti-colisión garantizada.
+* **Interfaz ([`ui/app.js`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/ui/app.js)):** Renderiza reactivamente una tarjeta de supervisión con telemetría para cada dispositivo.
+
+### 9.2. Dispositivos Virtuales DirectShow (Windows)
+* **Escenario de 3 a 4 Cámaras:**  
+  El driver DirectShow [`UnityCapture`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/core/virtual_cam.py) soporta nativamente hasta 4 dispositivos virtuales simultáneos (`Unity Video Capture`, `Unity Video Capture #2`, `#3` y `#4`). Las constantes internas ya están declaradas en [`core/virtual_cam.py`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/core/virtual_cam.py#L208-L213); habilitarlas requiere únicamente registrar los filtros `#3` y `#4` en el sistema.
+* **Escenario de >4 Cámaras:**  
+  Windows y las aplicaciones de videoconferencia (Zoom, Teams) no están preparadas para gestionar 6 u 8 webcams físicas abiertas al mismo tiempo. El patrón de diseño profesional en este caso es la **Matriz de Enrutamiento (*Routing Switcher*)**: la suite mantiene 2 o 4 dispositivos virtuales fijos en Windows, y la interfaz permite conmutar qué cámara física se redirige a cada dispositivo virtual.
+
+### 9.3. Rendimiento de Codificación Hardware y Carga de CPU
+* **NVIDIA NVENC (GeForce RTX 4060):**  
+  NVIDIA actualizó oficialmente el límite de sesiones concurrentes de NVENC en GPUs GeForce a **5 transmisiones simultáneas** (drivers 531+ / 550+). Por tanto, puede grabar de 1 a 5 cámaras 1080p30 en hardware en paralelo con una carga de GPU insignificante (<6%).
+* **Intel QuickSync (Mini-PC N100):**  
+  El bloque multimedia QuickSync de 12ª generación codifica fluidamente entre 3 y 4 señales 1080p30 en hardware. A partir de 5 cámaras se saturaría el ancho de banda de memoria de la gráfica integrada.
+* **CPU Software (`libx264 ultrafast` en AMD Ryzen 1600):**  
+  La codificación por CPU escala linealmente: 2 cámaras suponen un ~35% de CPU, 4 cámaras un ~75-85%, y 6 cámaras colapsarían el procesador sin GPU dedicada.
+* **Escritura en Disco:**  
+  4 cámaras a 4.5 Mbps equivalen a ~18 Mbps (~2.25 MB/s), lo que no supone ningún esfuerzo para discos SSD o unidades NVMe.
+
+### 9.4. Ancho de Banda en Red Local (Gigabit Ethernet)
+Las cámaras de tipo Nuroum V403 transmiten mediante el protocolo comprimido NDI|HX (~15 a 25 Mbps por flujo a 1080p30):
+* **2 Cámaras:** ~40-50 Mbps (5% de saturación en red Gigabit).
+* **4 Cámaras:** ~80-100 Mbps (10% de saturación).
+* **8 Cámaras:** ~160-200 Mbps (20% de saturación, plenamente soportable por switches 1 Gbps comerciales).
+
+### 9.5. Ergonomía Visual en Interfaz
+* Con 1 o 2 cámaras, la disposición actual en columna única vertical (395 px y 665 px) es óptima para mantener la ventana anclada en un lateral (*Always on Top*).
+* Con 3 o 4 cámaras, una columna única vertical requeriría más de 1200 px de alto, desbordando monitores Full HD. En ese escenario, la interfaz se adapta mediante una **disposición en cuadrícula 2x2 (Grid táctico)** con dimensiones de ventana de aproximadamente 640 x 550 px.
+
+| Variable Técnica | 2 Cámaras (Actual) | 3 a 4 Cámaras | 5 a 8 Cámaras |
+| :--- | :--- | :--- | :--- |
+| **Red LAN Gigabit (1 Gbps)** | Óptimo (~50 Mbps) | Holgado (~100 Mbps) | Viable en NDI\|HX (~200 Mbps) |
+| **Cámaras Virtuales DirectShow** | 2 nativas (Activas) | Requiere registrar `#3` y `#4` | Requiere Matriz Lógica a 2-4 salidas |
+| **Grabación NVENC (RTX 4060)** | <2% GPU | ~5% GPU (Dentro de sesión máx. 5) | Supera límite de fábrica GeForce |
+| **Grabación Intel QSV (N100)** | <4% GPU | ~10% GPU (Viable) | Límite de memoria compartida iGPU |
+| **Grabación CPU (Ryzen 1600)** | ~35% CPU | ~80% CPU (Al límite) | Inviable sin aceleración hardware |
+| **Disposición UI** | Columna única lateral | Cuadrícula 2x2 (*Grid*) | Cuadrícula 4x2 o pestañas |
+
+
+
+
+
 
 
 

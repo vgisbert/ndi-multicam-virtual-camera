@@ -8,6 +8,17 @@ backup/
 *.bak
 *.backup
 
+# --- Grabaciones Locales y Archivos Multimedia Generados ---
+grabaciones/
+recordings/
+*.mkv
+*.mp4
+*.avi
+*.mov
+*.ts
+*.flv
+*.wmv
+
 # --- Secretos, Credenciales y Entorno ---
 .env
 .env.*
@@ -31,6 +42,7 @@ env/
 __pycache__/
 **/__pycache__/
 *.py[cod]
+*.pyd
 *$py.class
 *.so
 .Python
@@ -46,14 +58,19 @@ target/
 **/*.rs.bk
 *.pdb
 
-# --- Empaquetadores y Temporales (PyInstaller, etc.) ---
+# --- Empaquetadores y Salidas de Distribución (PyInstaller, Tauri Release, etc.) ---
 build/
 dist/
-dist_portable/driver/
+dist_portable/
 *.spec
 *.manifest
 *.log
 
+# --- Archivos Comprimidos Generados Localmente ---
+*.zip
+*.tar
+*.gz
+*.7z
 
 # --- Archivos Temporales y Cachés de Sistema Operativo ---
 Thumbs.db

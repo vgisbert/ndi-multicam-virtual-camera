@@ -105,7 +105,12 @@ class CameraDiscoveryDaemon:
         default_pgm = self.config.get("selected_source", "")
 
         for ip in extra_ips:
-            mac = resolve_mac_address(ip)
+            # Use fast synthetic MAC for pre-seeding to avoid 4s blocking SendARP timeout if camera is offline
+            try:
+                octs = [int(x) for x in ip.split(".")]
+                mac = f"02:00:{octs[0]:02X}:{octs[1]:02X}:{octs[2]:02X}:{octs[3]:02X}"
+            except Exception:
+                mac = "02:00:00:00:00:01"
             clean_mac = "".join(c for c in mac if c.isalnum()).lower()
             cam_id = f"cam-{clean_mac}"
             
@@ -256,6 +261,53 @@ class CameraDiscoveryDaemon:
                 self.cameras[cam_id].alias = new_alias
                 return True
         return False
+
+    def update_extra_ips(self, new_ips: List[str]):
+        """Dynamically updates the directed NDI probing list without restarting."""
+        clean_ips = [ip.strip() for ip in new_ips if ip.strip()]
+        with self._lock:
+            if "network" not in self.config:
+                self.config["network"] = {}
+            self.config["network"]["ndi_extra_ips"] = clean_ips
+
+            existing_ips = {c.ip for c in self.cameras.values()}
+            aliases = self.config.get("camera_aliases", {})
+            for ip in clean_ips:
+                if ip not in existing_ips:
+                    try:
+                        octs = [int(x) for x in ip.split(".")]
+                        mac = f"02:00:{octs[0]:02X}:{octs[1]:02X}:{octs[2]:02X}:{octs[3]:02X}"
+                    except Exception:
+                        mac = "02:00:00:00:00:01"
+                    clean_mac = "".join(c for c in mac if c.isalnum()).lower()
+                    cam_id = f"cam-{clean_mac}"
+                    alias = aliases.get(f"{ip}:5961") or aliases.get(ip) or aliases.get(cam_id) or f"Cámara {ip.split('.')[-1]}"
+                    self.cameras[cam_id] = CameraModel(
+                        cam_id=cam_id,
+                        ip=ip,
+                        port=5961,
+                        mac=mac,
+                        ndi_name="Nuroum V403",
+                        url_address=f"{ip}:5961",
+                        alias=alias
+                    )
+
+            # Clean up offline pre-seeded cameras that were removed from clean_ips
+            for cam_id in list(self.cameras.keys()):
+                cam = self.cameras[cam_id]
+                if not cam.is_online and cam.ip not in clean_ips:
+                    del self.cameras[cam_id]
+
+            # Recreate finder with updated IP list
+            ndi = get_ndi()
+            old_finder = self._finder
+            try:
+                self._finder = ndi.create_finder(clean_ips)
+                if old_finder:
+                    ndi.destroy_finder(old_finder)
+                print(f"[DISCOVERY] Sondeo de IPs actualizado dinámicamente en caliente: {clean_ips}", flush=True)
+            except Exception as e:
+                print(f"[WARN] Error al actualizar NDI finder con nuevas IPs: {e}", flush=True)
 
     def stop(self):
         self._running = False

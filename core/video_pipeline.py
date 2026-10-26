@@ -10,14 +10,15 @@ import ctypes
 import threading
 import numpy as np
 import cv2
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from ndi_wrapper import get_ndi, NDILIB_FRAME_TYPE_VIDEO
 from discovery import CameraDiscoveryDaemon
 from virtual_cam import VirtualCameraManager
+from recorder import MultiCameraRecordingManager
 
 class CameraStreamWorker:
     """Manages an active NDI receiver and pushes frames to Virtual Camera and Thumbnails."""
-    def __init__(self, cam_id: str, ip: str, port: int, ndi_name: str, url_address: str, alias: str, vcam: VirtualCameraManager):
+    def __init__(self, cam_id: str, ip: str, port: int, ndi_name: str, url_address: str, alias: str, vcam: VirtualCameraManager, monitoring_enabled: bool = True, thumb_fps: float = 4.0):
         self.cam_id = cam_id
         self.ip = ip
         self.port = port
@@ -25,6 +26,9 @@ class CameraStreamWorker:
         self.url_address = url_address
         self.alias = alias
         self.vcam = vcam
+        self.monitoring_enabled = monitoring_enabled
+        self.thumb_fps = thumb_fps
+        self.recorder_manager: Optional[MultiCameraRecordingManager] = None
         
         self.latest_thumbnail_b64: Optional[str] = None
         self.measured_fps = 30.0
@@ -79,18 +83,28 @@ class CameraStreamWorker:
                         if stream_fps > 0:
                             self.measured_fps = stream_fps
 
-                    # 1. Push directly to its dedicated Virtual Camera device
+                    # 1. Push directly to its dedicated Virtual Camera device (always operational)
                     self.vcam.push_frame(self.cam_id, bgr_img, source_label=f"{self.alias} ({self.ip})")
 
-                    # 2. Update UI thumbnail at ~10 fps
-                    now = time.time()
-                    if now - last_thumb_time >= 0.10:
-                        last_thumb_time = now
-                        thumb = cv2.resize(bgr_img, (280, 158), interpolation=cv2.INTER_AREA)
-                        _, enc = cv2.imencode('.jpg', thumb, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                        b64 = base64.b64encode(enc.tobytes()).decode('ascii')
-                        with self._lock:
-                            self.latest_thumbnail_b64 = f"data:image/jpeg;base64,{b64}"
+                    # 2. Push to dual MKV recorder if active
+                    if self.recorder_manager and self.recorder_manager.is_recording:
+                        self.recorder_manager.push_frame(self.cam_id, bgr_img)
+
+                    # 3. Update UI thumbnail only if monitoring is enabled
+                    if self.monitoring_enabled:
+                        now = time.time()
+                        target_delay = 1.0 / max(1.0, float(self.thumb_fps))
+                        if now - last_thumb_time >= target_delay:
+                            last_thumb_time = now
+                            thumb = cv2.resize(bgr_img, (280, 158), interpolation=cv2.INTER_LINEAR)
+                            _, enc = cv2.imencode('.jpg', thumb, [cv2.IMWRITE_JPEG_QUALITY, 65])
+                            b64 = base64.b64encode(enc.tobytes()).decode('ascii')
+                            with self._lock:
+                                self.latest_thumbnail_b64 = f"data:image/jpeg;base64,{b64}"
+                    else:
+                        if self.latest_thumbnail_b64 is not None:
+                            with self._lock:
+                                self.latest_thumbnail_b64 = None
 
                 except Exception as e:
                     pass
@@ -123,12 +137,16 @@ class CameraStreamWorker:
 
 
 class VideoPipeline:
-    def __init__(self, discovery_daemon: CameraDiscoveryDaemon, vcam_manager: VirtualCameraManager):
+    def __init__(self, discovery_daemon: CameraDiscoveryDaemon, vcam_manager: VirtualCameraManager, preview_fps: float = 4.0, recording_dir: Optional[str] = None):
         self.discovery = discovery_daemon
         self.vcam = vcam_manager
+        self.recorder_manager = MultiCameraRecordingManager(default_dir=recording_dir)
         self.workers: Dict[str, CameraStreamWorker] = {}
         self._running = False
         self._coordinator_thread: Optional[threading.Thread] = None
+        self.monitoring_enabled: bool = True
+        self.window_visible: bool = True
+        self.preview_fps: float = max(1.0, min(30.0, float(preview_fps)))
 
     def start(self):
         if self._running:
@@ -164,13 +182,19 @@ class VideoPipeline:
                             ndi_name=cam["ndi_name"],
                             url_address=url,
                             alias=alias,
-                            vcam=self.vcam
+                            vcam=self.vcam,
+                            monitoring_enabled=(self.monitoring_enabled and self.window_visible),
+                            thumb_fps=self.preview_fps
                         )
+                        new_worker.recorder_manager = self.recorder_manager
                         new_worker.start()
                         worker = new_worker
                         self.workers[c_id] = new_worker
                     else:
                         worker.alias = alias
+                        worker.monitoring_enabled = (self.monitoring_enabled and self.window_visible)
+                        worker.thumb_fps = self.preview_fps
+                        worker.recorder_manager = self.recorder_manager
 
                     # Always sync alias, live FPS, and resolution
                     cam_model = self.discovery.get_camera(c_id)
@@ -187,7 +211,52 @@ class VideoPipeline:
 
             time.sleep(0.8)
 
+    def _sync_workers_monitoring(self):
+        active = self.monitoring_enabled and self.window_visible
+        for worker in self.workers.values():
+            worker.monitoring_enabled = active
+            if not active:
+                with worker._lock:
+                    worker.latest_thumbnail_b64 = None
+
+    def set_monitoring(self, enabled: bool):
+        self.monitoring_enabled = enabled
+        self._sync_workers_monitoring()
+        state_str = "ACTIVADA" if enabled else "PAUSADA (Modo Rendimiento / Ahorro CPU)"
+        print(f"[PERF] Monitorización de vídeo {state_str}", flush=True)
+
+    def set_window_visibility(self, visible: bool):
+        if self.window_visible == visible:
+            return
+        self.window_visible = visible
+        self._sync_workers_monitoring()
+        if not visible:
+            print("[PERF] Ventana minimizada/oculta -> Monitorización en pausa automática (Ahorro CPU)", flush=True)
+        else:
+            if self.monitoring_enabled:
+                print("[PERF] Ventana restaurada/visible -> Monitorización de vídeo reanudada", flush=True)
+
+    def set_preview_fps(self, fps: float):
+        self.preview_fps = max(1.0, min(30.0, float(fps)))
+        for worker in self.workers.values():
+            worker.thumb_fps = self.preview_fps
+        print(f"[PERF] Frecuencia de miniatura actualizada a {self.preview_fps:.1f} FPS", flush=True)
+
+    def is_monitoring_enabled(self) -> bool:
+        return self.monitoring_enabled and self.window_visible
+
+    def start_recording(self, custom_dir: Optional[str] = None) -> bool:
+        return self.recorder_manager.start_recording(self.workers, custom_dir=custom_dir)
+
+    def stop_recording(self) -> List[str]:
+        return self.recorder_manager.stop_recording()
+
+    def get_recording_status(self) -> dict:
+        return self.recorder_manager.get_status()
+
     def get_all_thumbnails(self) -> Dict[str, str]:
+        if not (self.monitoring_enabled and self.window_visible):
+            return {}
         thumbs = {}
         for c_id, w in list(self.workers.items()):
             t = w.get_thumbnail()
@@ -197,6 +266,10 @@ class VideoPipeline:
 
     def stop(self):
         self._running = False
+        try:
+            self.recorder_manager.stop_recording()
+        except Exception:
+            pass
         if self._coordinator_thread and self._coordinator_thread.is_alive():
             self._coordinator_thread.join(timeout=1.5)
         for w in self.workers.values():

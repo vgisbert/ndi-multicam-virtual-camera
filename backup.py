@@ -18,8 +18,11 @@ FILES_TO_BACKUP = [
     "src-tauri",
     "frontend",
     
-    # Configuración del sistema
+    # Configuración del sistema y repositorio
     "config.json",
+    ".gitignore",
+    "LICENSE",
+    "README.md",
     
     # Lanzadores y mantenimiento
     "arrancar.bat",
@@ -51,7 +54,7 @@ def make_backup():
         
         if os.path.exists(src):
             if os.path.isdir(src):
-                ignore_func = shutil.ignore_patterns("venv", "__pycache__", "*.pyc", ".git", "target", "node_modules")
+                ignore_func = shutil.ignore_patterns("venv", "__pycache__", "*.pyc", ".git", "target", "node_modules", "*.mkv", "*.mp4", "*.avi")
                 shutil.copytree(src, dst, dirs_exist_ok=True, ignore=ignore_func)
                 # Calcular tamaño acumulado de la carpeta
                 folder_bytes = sum(

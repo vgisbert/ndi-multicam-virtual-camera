@@ -4,9 +4,66 @@
  */
 
 let isPinned = false;
+let isMonitoringEnabled = true;
+let isRecording = false;
+let isDocumentVisible = !document.hidden;
+let currentPreviewFps = 4;
 let currentCameras = [];
 let currentStatus = {};
-let pollingInterval = null;
+let statusInterval = null;
+let thumbInterval = null;
+
+function setupPolling() {
+  if (statusInterval) clearInterval(statusInterval);
+  const statusRate = isDocumentVisible ? 500 : 2000;
+  statusInterval = setInterval(() => {
+    fetchStatus();
+    fetchCameras();
+  }, statusRate);
+
+  restartThumbPolling();
+}
+
+function restartThumbPolling() {
+  if (thumbInterval) clearInterval(thumbInterval);
+  if (!isDocumentVisible || !isMonitoringEnabled) {
+    return;
+  }
+  const thumbRate = Math.round(1000 / Math.max(1, currentPreviewFps));
+  thumbInterval = setInterval(() => {
+    if (isDocumentVisible && isMonitoringEnabled) {
+      fetchThumbnails();
+    }
+  }, thumbRate);
+}
+
+// Auto-pausa al minimizar o desenfocar la ventana (document.hidden)
+document.addEventListener("visibilitychange", () => {
+  const visible = !document.hidden;
+  handleVisibilityChange(visible);
+});
+
+async function handleVisibilityChange(visible) {
+  isDocumentVisible = visible;
+  try {
+    await fetch("/api/window/visibility", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ visible: visible })
+    });
+  } catch (err) {
+    // Non-critical
+  }
+
+  setupPolling();
+  if (visible) {
+    fetchStatus();
+    fetchCameras();
+    if (isMonitoringEnabled) {
+      fetchThumbnails();
+    }
+  }
+}
 
 // Initialize on page load
 document.addEventListener("DOMContentLoaded", () => {
@@ -14,13 +71,7 @@ document.addEventListener("DOMContentLoaded", () => {
   fetchStatus();
   fetchCameras();
   fetchThumbnails();
-
-  // Fast polling for status, cameras, and miniature thumbnails
-  pollingInterval = setInterval(() => {
-    fetchStatus();
-    fetchCameras();
-    fetchThumbnails();
-  }, 400);
+  setupPolling();
 });
 
 async function fetchStatus() {
@@ -48,6 +99,7 @@ async function fetchCameras() {
 }
 
 async function fetchThumbnails() {
+  if (!isMonitoringEnabled || !isDocumentVisible) return;
   try {
     const res = await fetch("/api/thumbnails");
     if (!res.ok) return;
@@ -120,6 +172,19 @@ function renderStatus(status) {
     }
   }
 
+  if (status.monitoring_enabled !== undefined && status.monitoring_enabled !== isMonitoringEnabled) {
+    updateMonitoringUI(status.monitoring_enabled);
+  }
+
+  if (status.preview_fps && status.preview_fps !== currentPreviewFps) {
+    currentPreviewFps = status.preview_fps;
+    restartThumbPolling();
+  }
+
+  if (status.recording) {
+    renderRecordingState(status.recording);
+  }
+
   // Header status indicator
   const onlineCount = currentCameras.filter(c => c.is_online).length;
   const countEl = document.getElementById("sources-count");
@@ -136,11 +201,35 @@ function renderStatus(status) {
   }
 }
 
+let lastResizedCount = null;
+
+async function requestWindowResize(cameraCount) {
+  if (lastResizedCount === cameraCount) return;
+  lastResizedCount = cameraCount;
+  try {
+    await fetch("/api/window/resize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ camera_count: cameraCount })
+    });
+  } catch (err) {
+    // Non-critical in browser mode
+  }
+}
+
 function renderCameras(cameras) {
   const container = document.getElementById("cameras-container");
   if (!container) return;
 
-  if (!cameras || cameras.length === 0) {
+  // Filtrar solo las cámaras activas/conectadas (is_online)
+  // Si no hay ninguna online, se muestra el indicador de búsqueda
+  const onlineCameras = (cameras || []).filter(c => c.is_online);
+  const displayCameras = onlineCameras.length > 0 ? onlineCameras : (cameras || []);
+
+  const activeCount = onlineCameras.length;
+  requestWindowResize(activeCount);
+
+  if (!displayCameras || displayCameras.length === 0) {
     container.innerHTML = `
       <div class="p-4 text-center text-txt-muted flex flex-col items-center justify-center gap-2">
         <span class="material-symbols-outlined text-[24px] animate-spin text-cyan-tac">progress_activity</span>
@@ -152,14 +241,14 @@ function renderCameras(cameras) {
 
   // Preserve existing cards to avoid UI flicker, update contents or rebuild if length changed
   let existingCards = container.querySelectorAll(".camera-card");
-  if (existingCards.length !== cameras.length) {
+  if (existingCards.length !== displayCameras.length) {
     container.innerHTML = "";
-    cameras.forEach(cam => {
+    displayCameras.forEach(cam => {
       const card = createCameraCardElement(cam);
       container.appendChild(card);
     });
   } else {
-    cameras.forEach(cam => {
+    displayCameras.forEach(cam => {
       updateCameraCardElement(cam);
     });
   }
@@ -188,6 +277,12 @@ function createCameraCardElement(cam) {
     <div class="relative w-full aspect-video bg-surface-lowest rounded overflow-hidden border border-border-tac/30 flex items-center justify-center">
       <img id="thumb-${cam.cam_id}" class="w-full h-full object-cover thumb-fade" src="" alt="Live Preview" style="display: none;">
       
+      <!-- BADGE REC (GRABANDO) -->
+      <div id="badge-rec-${cam.cam_id}" class="${isRecording ? '' : 'hidden'} absolute top-1.5 right-1.5 z-20 px-1.5 py-0.5 rounded bg-red-tac text-white font-bold text-[8px] flex items-center gap-1 shadow-[0_0_8px_#ff1744] tracking-wider">
+        <span class="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>
+        <span>REC</span>
+      </div>
+      
       <!-- FALLBACK DE ESPERA CUANDO NO HAY FOTOGRAMA -->
       <div id="thumb-placeholder-${cam.cam_id}" class="absolute inset-0 flex flex-col items-center justify-center text-txt-muted gap-1 p-2 text-center bg-surface-lowest">
         <span class="material-symbols-outlined text-[20px] text-cyan-tac/80 animate-pulse">videocam</span>
@@ -201,6 +296,15 @@ function createCameraCardElement(cam) {
           <span>${t("offline_notice")}</span>
         </div>
         <span class="text-[8px] text-txt-muted">${t("offline_reconnecting")}</span>
+      </div>
+
+      <!-- OVERLAY MODO RENDIMIENTO / ECO (MONITORIZACIÓN EN PAUSA) -->
+      <div id="thumb-eco-${cam.cam_id}" class="${isMonitoringEnabled ? 'hidden' : ''} absolute inset-0 bg-surface-dim/95 flex flex-col items-center justify-center gap-1.5 p-2 text-center z-10">
+        <div class="px-2 py-0.5 rounded bg-surface-high border border-cyan-tac/40 text-cyan-tac font-bold text-[9px] tracking-wider flex items-center gap-1">
+          <span class="material-symbols-outlined text-[13px] text-cyan-tac">speed</span>
+          <span class="eco-badge-text">${t("monitor_eco_badge")}</span>
+        </div>
+        <span class="text-[8px] text-txt-muted eco-subtext">${t("monitor_eco_subtext")}</span>
       </div>
     </div>
 
@@ -245,6 +349,15 @@ function applyCardData(card, cam) {
   const rttEl = card.querySelector(".cam-rtt");
   const statusDot = card.querySelector(".status-dot");
   const offlineOverlay = card.querySelector(`#thumb-offline-${cam.cam_id}`);
+  const ecoOverlay = card.querySelector(`#thumb-eco-${cam.cam_id}`);
+
+  if (ecoOverlay) {
+    if (isMonitoringEnabled) {
+      ecoOverlay.classList.add("hidden");
+    } else {
+      ecoOverlay.classList.remove("hidden");
+    }
+  }
 
   aliasEl.textContent = getLocalizedAlias(cam);
   ipEl.textContent = cam.ip;
@@ -293,7 +406,7 @@ function applyCardData(card, cam) {
 }
 
 function updateThumbnails(thumbs) {
-  if (!thumbs) return;
+  if (!isMonitoringEnabled || !thumbs) return;
   for (const [camId, dataUrl] of Object.entries(thumbs)) {
     const img = document.getElementById(`thumb-${camId}`);
     const placeholder = document.getElementById(`thumb-placeholder-${camId}`);
@@ -304,6 +417,116 @@ function updateThumbnails(thumbs) {
       img.style.display = "block";
       if (placeholder) placeholder.style.display = "none";
     }
+  }
+}
+
+function updateMonitoringUI(enabled) {
+  isMonitoringEnabled = enabled;
+  restartThumbPolling();
+  const btn = document.getElementById("btn-monitor");
+  const icon = document.getElementById("btn-monitor-icon");
+  const text = document.getElementById("btn-monitor-text");
+
+  if (btn && icon && text) {
+    if (enabled) {
+      btn.className = "px-1.5 py-0.5 rounded bg-surface-high hover:bg-surface-highest text-cyan-tac font-bold text-[9.5px] border border-border-tac/40 flex items-center gap-1 transition-colors cursor-pointer";
+      icon.textContent = "visibility";
+      text.textContent = t("monitor_on");
+    } else {
+      btn.className = "px-1.5 py-0.5 rounded bg-amber-dim/50 hover:bg-amber-dim/70 text-amber-tac font-bold text-[9.5px] border border-amber-tac/50 flex items-center gap-1 transition-colors cursor-pointer";
+      icon.textContent = "visibility_off";
+      text.textContent = t("monitor_off");
+    }
+  }
+
+  // Update eco overlay on camera cards
+  document.querySelectorAll('[id^="thumb-eco-"]').forEach(el => {
+    if (enabled) {
+      el.classList.add("hidden");
+    } else {
+      el.classList.remove("hidden");
+    }
+  });
+}
+
+async function toggleMonitoring() {
+  try {
+    const res = await fetch("/api/monitoring/toggle", { method: "POST" });
+    const data = await res.json();
+    if (data.success) {
+      updateMonitoringUI(data.monitoring_enabled);
+      if (data.monitoring_enabled) {
+        fetchThumbnails();
+      }
+    }
+  } catch (err) {
+    console.error("Error al conmutar monitorizacion:", err);
+  }
+}
+
+function formatRecordingDuration(totalSeconds) {
+  const s = Math.max(0, Math.floor(totalSeconds || 0));
+  const hrs = Math.floor(s / 3600);
+  const mins = Math.floor((s % 3600) / 60);
+  const secs = s % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  if (hrs > 0) {
+    return `${pad(hrs)}:${pad(mins)}:${pad(secs)}`;
+  }
+  return `${pad(mins)}:${pad(secs)}`;
+}
+
+function renderRecordingState(rec) {
+  if (!rec) return;
+  isRecording = !!rec.is_recording;
+
+  const btn = document.getElementById("btn-record");
+  const dot = document.getElementById("btn-record-dot");
+  const text = document.getElementById("btn-record-text");
+
+  if (btn && dot && text) {
+    if (isRecording) {
+      const durStr = formatRecordingDuration(rec.elapsed_seconds);
+      btn.className = "px-2 py-0.5 rounded bg-red-tac hover:bg-red-tac/90 text-white font-bold text-[9.5px] border border-red-tac shadow-[0_0_10px_#ff1744] flex items-center gap-1 transition-all cursor-pointer";
+      dot.className = "w-2 h-2 rounded-full bg-white animate-ping";
+      text.textContent = `REC ${durStr}`;
+      const encText = rec.encoder_desc ? ` (${rec.encoder_desc})` : "";
+      btn.title = `${t("btn_rec_title")}${encText}`;
+    } else {
+      btn.className = "px-2 py-0.5 rounded bg-surface-high hover:bg-surface-highest text-red-tac font-bold text-[9.5px] border border-red-tac/40 flex items-center gap-1 transition-all cursor-pointer";
+      dot.className = "w-2 h-2 rounded-full bg-red-tac shadow-[0_0_6px_#ff1744]";
+      text.textContent = t("rec_idle") || "REC";
+      const encText = rec.encoder_desc ? ` (${rec.encoder_desc})` : "";
+      btn.title = `${t("btn_rec_title")}${encText}`;
+    }
+  }
+
+  // Update REC badge on camera cards
+  const recordings = rec.recordings || {};
+  document.querySelectorAll('[id^="badge-rec-"]').forEach(badge => {
+    const camId = badge.id.replace("badge-rec-", "");
+    if (isRecording && (!rec.camera_count || recordings[camId] || recordings[camId] === undefined)) {
+      badge.classList.remove("hidden");
+    } else {
+      badge.classList.add("hidden");
+    }
+  });
+}
+
+async function toggleRecording() {
+  const btn = document.getElementById("btn-record");
+  if (btn) btn.classList.add("opacity-50");
+  try {
+    const res = await fetch("/api/recording/toggle", { method: "POST" });
+    const data = await res.json();
+    if (data.status) {
+      renderRecordingState(data.status);
+    }
+    fetchStatus();
+  } catch (err) {
+    console.error("Error al conmutar grabacion:", err);
+  } finally {
+    if (btn) btn.classList.remove("opacity-50");
   }
 }
 
@@ -350,6 +573,19 @@ async function togglePin() {
 }
 
 // Modal Settings
+async function browseRecordingDir() {
+  try {
+    const res = await fetch("/api/browse-folder", { method: "POST" });
+    const data = await res.json();
+    if (data.success && data.directory) {
+      const input = document.getElementById("cfg-recording-dir");
+      if (input) input.value = data.directory;
+    }
+  } catch (err) {
+    console.error("Error al examinar carpeta:", err);
+  }
+}
+
 function openSettings() {
   const modal = document.getElementById("modal-settings");
   if (!modal) return;
@@ -360,17 +596,33 @@ function openSettings() {
     document.getElementById("cfg-vcam-name").value = cfg.virtual_camera_name || "NDI Virtual Camera";
     const extraIps = (cfg.network && cfg.network.ndi_extra_ips) ? cfg.network.ndi_extra_ips.join(", ") : "";
     document.getElementById("cfg-extra-ips").value = extraIps;
+    if (document.getElementById("cfg-preview-fps")) {
+      document.getElementById("cfg-preview-fps").value = String(cfg.preview_fps || 4);
+    }
+    if (document.getElementById("cfg-recording-dir")) {
+      document.getElementById("cfg-recording-dir").value = cfg.recording_dir || "";
+    }
 
     const aliasesBox = document.getElementById("cfg-aliases-container");
     aliasesBox.innerHTML = "";
+    const errBox = document.getElementById("cfg-aliases-error");
+    if (errBox) errBox.classList.add("hidden");
+
     currentCameras.forEach(cam => {
       const row = document.createElement("div");
       row.className = "flex items-center gap-1.5";
       const displayVal = getLocalizedAlias(cam);
       row.innerHTML = `
         <span class="text-[9px] text-txt-muted w-24 truncate">${cam.ip}:</span>
-        <input type="text" data-cam-id="${cam.cam_id}" value="${displayVal}" class="alias-input flex-1 bg-surface-lowest border border-border-tac rounded px-2 py-0.5 text-txt-main text-[9.5px] outline-none focus:border-cyan-tac">
+        <input type="text" data-cam-id="${cam.cam_id}" value="${displayVal}" class="alias-input flex-1 bg-surface-lowest border border-border-tac rounded px-2 py-0.5 text-txt-main text-[9.5px] outline-none focus:border-cyan-tac transition-colors">
       `;
+      const inputEl = row.querySelector("input");
+      if (inputEl) {
+        inputEl.addEventListener("input", () => {
+          document.querySelectorAll(".alias-input").forEach(i => i.classList.remove("border-red-tac", "bg-red-dim/20"));
+          if (errBox) errBox.classList.add("hidden");
+        });
+      }
       aliasesBox.appendChild(row);
     });
   });
@@ -379,12 +631,43 @@ function openSettings() {
 function closeSettings() {
   const modal = document.getElementById("modal-settings");
   if (modal) modal.classList.add("hidden");
+  const errBox = document.getElementById("cfg-aliases-error");
+  if (errBox) errBox.classList.add("hidden");
+  document.querySelectorAll(".alias-input").forEach(i => i.classList.remove("border-red-tac", "bg-red-dim/20"));
 }
 
-async function saveSettings() {
+async function saveAndCloseSettings() {
   const vcamName = document.getElementById("cfg-vcam-name").value.trim();
   const rawIps = document.getElementById("cfg-extra-ips").value;
   const extraIps = rawIps.split(",").map(s => s.trim()).filter(s => s.length > 0);
+
+  // Verificación estricta: evitar que por error se ponga el mismo nombre a las cámaras
+  const seenAliases = new Map();
+  const duplicateInputs = [];
+  const errBox = document.getElementById("cfg-aliases-error");
+
+  document.querySelectorAll(".alias-input").forEach(input => {
+    input.classList.remove("border-red-tac", "bg-red-dim/20");
+    const val = input.value.trim().toLowerCase();
+    if (val) {
+      if (seenAliases.has(val)) {
+        duplicateInputs.push(input);
+        duplicateInputs.push(seenAliases.get(val));
+      } else {
+        seenAliases.set(val, input);
+      }
+    }
+  });
+
+  if (duplicateInputs.length > 0) {
+    duplicateInputs.forEach(input => {
+      input.classList.add("border-red-tac", "bg-red-dim/20");
+    });
+    if (errBox) errBox.classList.remove("hidden");
+    return; // Cancelar guardado para evitar colisiones: mantiene el modal abierto para corregir
+  } else {
+    if (errBox) errBox.classList.add("hidden");
+  }
 
   const aliases = {};
   document.querySelectorAll(".alias-input").forEach(input => {
@@ -401,23 +684,45 @@ async function saveSettings() {
     }
   });
 
+  const previewFpsEl = document.getElementById("cfg-preview-fps");
+  const previewFps = previewFpsEl ? parseInt(previewFpsEl.value, 10) : 4;
+  const recDirEl = document.getElementById("cfg-recording-dir");
+  const recDir = recDirEl ? recDirEl.value.trim() : "";
+
   const payload = {
     virtual_camera_name: vcamName,
     extra_ips: extraIps,
-    aliases: aliases
+    aliases: aliases,
+    preview_fps: previewFps,
+    recording_dir: recDir
   };
 
   try {
-    await fetch("/api/config", {
+    const res = await fetch("/api/config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
+    const data = await res.json();
+    if (!data.success && data.error) {
+      if (errBox) {
+        const textEl = document.getElementById("cfg-aliases-error-text");
+        if (textEl) textEl.textContent = data.error;
+        errBox.classList.remove("hidden");
+      }
+      return;
+    }
     closeSettings();
+    currentPreviewFps = previewFps;
+    restartThumbPolling();
     forceRefreshUI();
     await fetchCameras();
     fetchStatus();
   } catch (err) {
     console.error("Error al guardar configuracion:", err);
+    closeSettings();
   }
 }
+
+// Alias de compatibilidad
+const saveSettings = saveAndCloseSettings;

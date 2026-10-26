@@ -66,14 +66,13 @@ echo.
 echo Iniciando NDI Virtual Camera...
 echo ======================================================
 
-:: Liberar puerto 8765 si quedo retenido por alguna sesion previa (cualquier estado)
-powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 8765 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }" >nul 2>&1
-for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr :8765') do (
-    taskkill /f /pid %%a >nul 2>&1
+:: Liberar puerto 8765 si quedo retenido por alguna sesion previa
+for /f "tokens=5" %%a in ('netstat -ano 2^>nul ^| findstr ":8765"') do (
+    if not "%%a"=="0" taskkill /f /pid %%a >nul 2>&1
 )
 
 if exist "core\main.py" (
-    core\venv\Scripts\python.exe core\main.py
+    core\venv\Scripts\python.exe -u core\main.py
 ) else (
     echo [INFO] Estructura inicial preparada. Consulta DOCUMENTACION.md y PLAN_DE_TRABAJO.md
     pause
