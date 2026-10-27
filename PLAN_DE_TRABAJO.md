@@ -21,8 +21,8 @@ flowchart TD
   * Soporte de memoria compartida dual (`UnityCapture_Data0` y `UnityCapture_Data1`).
 * [x] **1.2. Script `instalar_driver_multicamara.bat`:**
   * Auto-elevación a Administrador para registrar 2 dispositivos simultáneos:
-    * `Camara 1 - Frontal (NDI)`
-    * `Camara 2 - Lateral (NDI)`
+    * `NDI Camara 1`
+    * `NDI Camara 2`
 * [x] **1.3. Script `desinstalar_driver_multicamara.bat`:**
   * Limpieza del registro para retirar los dispositivos virtuales cuando sea necesario.
 

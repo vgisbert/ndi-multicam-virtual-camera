@@ -7,8 +7,8 @@ Este directorio contiene los filtros DirectShow y los scripts de instalación pa
 * **`UnityCaptureFilter32.dll`**: Filtro DirectShow de 32 bits para compatibilidad opcional con aplicaciones de 32 bits.
 * **`instalar_driver_multicamara.bat`**: Lanzador con auto-elevación a Administrador que ejecuta el registro de los 2 dispositivos virtuales.
 * **`instalar_multicamara.ps1`**: Script PowerShell que invoca `regsvr32.exe /s /i:UnityCaptureDevices=2` y configura los nombres amigables:
-  * `Camara 1 - Frontal (NDI)`
-  * `Camara 2 - Lateral (NDI)`
+  * `NDI Camara 1`
+  * `NDI Camara 2`
 * **`desinstalar_driver_multicamara.bat`**: Lanzador para desinstalar y desregistrar los filtros.
 * **`desinstalar_multicamara.ps1`**: Limpia las entradas DirectShow del registro de Windows.
 

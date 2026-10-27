@@ -26,14 +26,14 @@ flowchart TD
     end
 
     subgraph DirectShow["Windows 10 DirectShow Video Capture"]
-        Dev1["Dispositivo 1: 'Camara 1 - Frontal (NDI)'"]
-        Dev2["Dispositivo 2: 'Camara 2 - Lateral (NDI)'"]
+        Dev1["Dispositivo 1: 'NDI Camara 1'"]
+        Dev2["Dispositivo 2: 'NDI Camara 2'"]
     end
 
     subgraph MasterApp["Software de Realización Único"]
         OBS["OBS Studio / ManyCam"]
-        Escena1["Escena 1: Solo Plano Frontal"]
-        Escena2["Escena 2: Solo Plano Lateral"]
+        Escena1["Escena 1: Solo Cám 1"]
+        Escena2["Escena 2: Solo Cám 2"]
         Escena3["Escena 3: Multicámara PiP (Doble Plano)"]
     end
 
@@ -63,8 +63,8 @@ Para habilitar **2 o más cámaras virtuales simultáneas e independientes**:
 * Se integra el filtro DirectShow de alto rendimiento **`UnityCaptureFilter64.dll`**.
 * Al registrarse con `/i:UnityCaptureDevices=2`, crea dos canales de memoria compartida desacoplados (`UnityCapture_Data0` y `UnityCapture_Data1`).
 * Cada canal alimenta un dispositivo DirectShow diferenciado en Windows:
-  1. **`Camara 1 - Frontal (NDI)`**
-  2. **`Camara 2 - Lateral (NDI)`**
+  1. **`NDI Camara 1`**
+  2. **`NDI Camara 2`**
 
 ### 2.2. Ventajas para la Producción
 1. **Un solo programa en directo:** El realizador únicamente maneja OBS o ManyCam durante la emisión. No necesita tocar la ventana de NDI Virtual Camera.
@@ -85,7 +85,7 @@ Ambas cámaras Nuroum V403 emiten por defecto con el nombre idéntico `"LOCALHOS
 ## 4. Instaladores y Mantenimiento
 
 * **[`driver/instalar_driver_multicamara.bat`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/driver/instalar_driver_multicamara.bat):**  
-  Registra los 2 dispositivos virtuales simultáneos en Windows con permisos de Administrador (`Camara 1 - Frontal (NDI)` y `Camara 2 - Lateral (NDI)`).
+  Registra los 2 dispositivos virtuales simultáneos en Windows con permisos de Administrador (`NDI Camara 1` y `NDI Camara 2`).
 * **[`driver/desinstalar_driver_multicamara.bat`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/driver/desinstalar_driver_multicamara.bat):**  
   Limpia las entradas del registro de Windows cuando se deseen retirar las cámaras virtuales.
 * **[`arrancar.bat`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/arrancar.bat):**  
@@ -156,7 +156,7 @@ En un flujo de vídeo estándar a 30 FPS, cada fotograma dura **33.3 ms**. Una l
 ## 7. Tratamiento del Audio: Flujo NDI, Drivers Virtuales y Sincronización
 
 ### 7.1. Estado Actual del Proyecto: Emisión Exclusiva de Vídeo
-En la arquitectura actual de esta suite, los dispositivos virtuales expuestos en Windows (`Camara 1 - Frontal (NDI)` y `Camara 2 - Lateral (NDI)`) **transmiten exclusivamente señal de vídeo**:
+En la arquitectura actual de esta suite, los dispositivos virtuales expuestos en Windows (`NDI Camara 1` y `NDI Camara 2`) **transmiten exclusivamente señal de vídeo**:
 1. **Filtro DirectShow Dedicado:** El driver utilizado (`UnityCaptureFilter64.dll`) es un filtro DirectShow perteneciente a la categoría `CLSID_VideoInputDeviceCategory`. No registra ni implementa pines ni endpoints de audio ante el subsistema multimedia de Windows.
 2. **Filtrado en Pipeline:** Tanto en el motor nativo Rust ([`pipeline.rs`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/src-tauri/src/pipeline.rs#L58-L72)) como en el entorno Python, el receptor NDI filtra explícitamente tramas de tipo `NDILIB_FRAME_TYPE_VIDEO`. Las tramas de audio que viajan por el flujo NDI de la red se descartan deliberadamente para optimizar el rendimiento y el consumo de CPU.
 

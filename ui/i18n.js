@@ -43,8 +43,8 @@ const I18N_LOCALES = {
     telem_standby: "EN ESPERA",
 
     // Nombres por defecto de cámaras
-    cam_default_1: "Cámara 1 - Frontal",
-    cam_default_2: "Cámara 2 - Lateral",
+    cam_default_1: "Cám 1",
+    cam_default_2: "Cám 2",
 
     // Botón Maestro de Cámara Virtual
     btn_start_vcam: "ACTIVAR CÁMARAS VIRTUALES",
@@ -115,8 +115,8 @@ const I18N_LOCALES = {
     telem_standby: "STANDBY",
 
     // Default camera names
-    cam_default_1: "Camera 1 - Front",
-    cam_default_2: "Camera 2 - Side",
+    cam_default_1: "Cam 1",
+    cam_default_2: "Cam 2",
 
     // Master Virtual Cam Action Button
     btn_start_vcam: "START VIRTUAL CAMERAS",

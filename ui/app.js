@@ -111,6 +111,10 @@ async function fetchThumbnails() {
 }
 
 const DEFAULT_NAMES = [
+  "Cám 1",
+  "Cam 1",
+  "Cám 2",
+  "Cam 2",
   "Cámara 1 - Frontal",
   "Camera 1 - Front",
   "Cámara 2 - Lateral",

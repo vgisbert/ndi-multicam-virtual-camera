@@ -60,8 +60,8 @@ echo   Entra en la carpeta "driver" y haz clic derecho en:
 echo       "instalar_driver_multicamara.bat" -^> Ejecutar como Administrador.
 echo.
 echo   Esto registrara los dos canales de camara virtual en Windows:
-echo     - "Camara 1 - Frontal (NDI)"
-echo     - "Camara 2 - Lateral (NDI)"
+echo     - "NDI Camara 1"
+echo     - "NDI Camara 2"
 echo.
 echo PASO 2:
 echo   Haz doble clic en:

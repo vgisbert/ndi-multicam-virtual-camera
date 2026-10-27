@@ -12,7 +12,7 @@
 ## 📌 ¿Qué problema resuelve este proyecto?
 
 1. **Limitación de Cámara Virtual Única en Windows:**  
-   Las herramientas oficiales de NDI y los drivers estándar (`obs-virtualcam`) solo permiten emitir una única cámara virtual global a la vez. Este proyecto integra un motor de memoria compartida desacoplada basado en DirectShow (`UnityCapture`) que expone **múltiples cámaras NDI simultáneas e independientes en Windows** (`Cámara 1 - Frontal`, `Cámara 2 - Lateral`, etc.) para consumirlas simultáneamente en OBS Studio, ManyCam, vMix, Zoom o Teams.
+   Las herramientas oficiales de NDI y los drivers estándar (`obs-virtualcam`) solo permiten emitir una única cámara virtual global a la vez. Este proyecto integra un motor de memoria compartida desacoplada basado en DirectShow (`UnityCapture`) que expone **múltiples cámaras NDI simultáneas e independientes en Windows** (`NDI Camara 1`, `NDI Camara 2`, etc.) para consumirlas simultáneamente en OBS Studio, ManyCam, vMix, Zoom o Teams.
 
 2. **Colisión de Nombres NDI Duplicados:**  
    Resuelve el problema de cámaras NDI de bajo coste (como las *Nuroum V403* / *Hamedal*) que emiten por defecto con el nombre idéntico `LOCALHOST (Nuroum Cam V403-)`. El sistema resuelve la dirección física MAC real (`iphlpapi.SendARP`) a nivel de Capa 2 y asocia cada flujo NDI por socket y puerto exacto (`<IP_CAM_1>:5961`, `<IP_CAM_2>:5961`), garantizando que cada cámara alimenta su canal virtual sin mezclas.
@@ -50,8 +50,8 @@ flowchart TD
     end
 
     subgraph DirectShow["Dispositivos Virtuales en Windows"]
-        Dev1["Dispositivo 1: 'Camara 1 - Frontal (NDI)'"]
-        Dev2["Dispositivo 2: 'Camara 2 - Lateral (NDI)'"]
+        Dev1["Dispositivo 1: 'NDI Camara 1'"]
+        Dev2["Dispositivo 2: 'NDI Camara 2'"]
     end
 
     subgraph Apps["Software de Producción"]
@@ -78,12 +78,12 @@ La carpeta [`dist_portable/`](file:///dist_portable/) contiene la distribución 
 
 1. **Instalar el Driver Multicámara (Solo la primera vez):**  
    Entra en `dist_portable/driver/`, haz clic derecho en **`instalar_driver_multicamara.bat`** y selecciona **Ejecutar como Administrador**.  
-   Esto registrará los dos canales DirectShow en Windows.
+   Esto registrará los dos canales DirectShow en Windows (`NDI Camara 1` y `NDI Camara 2`).
 2. **Lanzar la Aplicación:**  
-   Ejecuta **`NDI-Virtual-Camera.exe`**.  
+   Ejecuta **`NDI Virtual Camera.exe`**.  
    El programa detectará automáticamente las cámaras NDI en la red local y comenzará a alimentar los dispositivos virtuales.
 3. **Seleccionar en OBS / ManyCam:**  
-   Añade dos fuentes de vídeo "*Dispositivo de captura de vídeo*" y elige `Camara 1 - Frontal (NDI)` y `Camara 2 - Lateral (NDI)`.
+   Añade dos fuentes de vídeo "*Dispositivo de captura de vídeo*" y elige `NDI Camara 1` y `NDI Camara 2`.
 
 ---
 
