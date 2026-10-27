@@ -9,6 +9,14 @@
 
 ---
 
+## 📸 Capturas de la Aplicación
+
+| Pantalla Principal | Configuración y Selección de Ingesta |
+| :---: | :---: |
+| ![Pantalla Principal](docs/Pantalla_principal.png) | ![Configuración](docs/Pantalla_configuracion.png) |
+
+---
+
 ## 📌 ¿Qué problema resuelve este proyecto?
 
 1. **Limitación de Cámara Virtual Única en Windows:**  

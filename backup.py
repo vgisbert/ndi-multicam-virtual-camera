@@ -28,6 +28,7 @@ FILES_TO_BACKUP = [
     "arrancar.bat",
     "compilar_y_empaquetar.bat",
     "build_exe.py",
+    "ndi_virtual_camera.spec",
     "backup.py",
     
     # Documentación técnica
