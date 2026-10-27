@@ -4,6 +4,7 @@ Ingests NDI streams for all detected cameras simultaneously at full frame rate (
 delivering each stream to its corresponding Virtual Camera device and generating live UI thumbnails.
 """
 
+import os
 import time
 import base64
 import ctypes
@@ -17,8 +18,8 @@ from virtual_cam import VirtualCameraManager
 from recorder import MultiCameraRecordingManager
 
 class CameraStreamWorker:
-    """Manages an active NDI receiver and pushes frames to Virtual Camera and Thumbnails."""
-    def __init__(self, cam_id: str, ip: str, port: int, ndi_name: str, url_address: str, alias: str, vcam: VirtualCameraManager, monitoring_enabled: bool = True, thumb_fps: float = 4.0):
+    """Manages an active NDI or RTSP receiver and pushes frames to Virtual Camera and Thumbnails."""
+    def __init__(self, cam_id: str, ip: str, port: int, ndi_name: str, url_address: str, alias: str, vcam: VirtualCameraManager, monitoring_enabled: bool = True, thumb_fps: float = 4.0, protocol: str = "ndi"):
         self.cam_id = cam_id
         self.ip = ip
         self.port = port
@@ -28,13 +29,15 @@ class CameraStreamWorker:
         self.vcam = vcam
         self.monitoring_enabled = monitoring_enabled
         self.thumb_fps = thumb_fps
+        self.protocol = protocol.lower() if protocol else "ndi"
         self.recorder_manager: Optional[MultiCameraRecordingManager] = None
         
         self.latest_thumbnail_b64: Optional[str] = None
-        self.measured_fps = 30.0
-        self.resolution = "1920x1080"
+        self.measured_fps = 25.0 if self.protocol == "rtsp" else 30.0
+        self.resolution = "1280x720" if self.protocol == "rtsp" else "1920x1080"
         
         self._receiver = None
+        self._cap = None
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
@@ -43,10 +46,77 @@ class CameraStreamWorker:
         if self._running:
             return
         self._running = True
-        self._thread = threading.Thread(target=self._worker_loop, daemon=True, name=f"NDIWorker-{self.ip}")
+        target_fn = self._worker_rtsp_loop if self.protocol == "rtsp" else self._worker_ndi_loop
+        thread_name = f"RTSPWorker-{self.ip}" if self.protocol == "rtsp" else f"NDIWorker-{self.ip}"
+        self._thread = threading.Thread(target=target_fn, daemon=True, name=thread_name)
         self._thread.start()
 
-    def _worker_loop(self):
+    def _worker_rtsp_loop(self):
+        rtsp_url = f"rtsp://{self.ip}:554/live/mainStream"
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|buffer_size;102400|max_delay;500000|fflags;nobuffer|stimeout;2000000"
+        self._cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+        if not self._cap.isOpened():
+            print(f"[ERROR] No se pudo conectar a flujo RTSP en {rtsp_url}", flush=True)
+            self._running = False
+            return
+
+        print(f"[OK] Canal RTSP (720p) activo para: {self.alias} ({rtsp_url})", flush=True)
+        last_thumb_time = 0.0
+        fps_frame_count = 0
+        fps_timer = time.time()
+
+        while self._running and self._cap and self._cap.isOpened():
+            ret, bgr_img = self._cap.read()
+            if not ret or bgr_img is None:
+                time.sleep(0.015)
+                continue
+
+            h, w = bgr_img.shape[:2]
+            self.resolution = f"{w}x{h}"
+            fps_frame_count += 1
+
+            # 1. Salida DirectShow hacia cámara virtual
+            if self.vcam:
+                self.vcam.push_frame(self.cam_id, bgr_img, source_label=f"{self.alias} ({self.ip}) [RTSP]")
+
+            # 2. Grabador MKV
+            if self.recorder_manager and self.recorder_manager.is_recording:
+                self.recorder_manager.push_frame(self.cam_id, bgr_img)
+
+            # 3. Miniatura UI
+            if self.monitoring_enabled:
+                now = time.time()
+                target_delay = 1.0 / max(1.0, float(self.thumb_fps))
+                if now - last_thumb_time >= target_delay:
+                    last_thumb_time = now
+                    thumb = cv2.resize(bgr_img, (280, 158), interpolation=cv2.INTER_LINEAR)
+                    _, enc = cv2.imencode('.jpg', thumb, [cv2.IMWRITE_JPEG_QUALITY, 65])
+                    b64 = base64.b64encode(enc.tobytes()).decode('ascii')
+                    with self._lock:
+                        self.latest_thumbnail_b64 = f"data:image/jpeg;base64,{b64}"
+            else:
+                if self.latest_thumbnail_b64 is not None:
+                    with self._lock:
+                        self.latest_thumbnail_b64 = None
+
+            # Medidor de FPS en tiempo real
+            elapsed = time.time() - fps_timer
+            if elapsed >= 1.0:
+                calc_fps = fps_frame_count / elapsed
+                if calc_fps > 0:
+                    self.measured_fps = round(calc_fps, 1)
+                fps_frame_count = 0
+                fps_timer = time.time()
+
+        if self._cap:
+            try:
+                self._cap.release()
+            except Exception:
+                pass
+            self._cap = None
+        print(f"[RTSP] Conexión RTSP cerrada para {self.alias}", flush=True)
+
+    def _worker_ndi_loop(self):
         ndi = get_ndi()
         try:
             self._receiver = ndi.create_receiver(
@@ -84,7 +154,8 @@ class CameraStreamWorker:
                             self.measured_fps = stream_fps
 
                     # 1. Push directly to its dedicated Virtual Camera device (always operational)
-                    self.vcam.push_frame(self.cam_id, bgr_img, source_label=f"{self.alias} ({self.ip})")
+                    if self.vcam:
+                        self.vcam.push_frame(self.cam_id, bgr_img, source_label=f"{self.alias} ({self.ip})")
 
                     # 2. Push to dual MKV recorder if active
                     if self.recorder_manager and self.recorder_manager.is_recording:
@@ -133,7 +204,13 @@ class CameraStreamWorker:
     def stop(self):
         self._running = False
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=1.0)
+            self._thread.join(timeout=1.5)
+        if self._cap:
+            try:
+                self._cap.release()
+            except Exception:
+                pass
+            self._cap = None
 
 
 class VideoPipeline:
@@ -161,30 +238,34 @@ class VideoPipeline:
         while self._running:
             all_cams = self.discovery.get_all_cameras()
             active_ids = set()
+            protocols_cfg = self.discovery.config.get("camera_protocols", {})
 
             for cam in all_cams:
                 c_id = cam["cam_id"]
                 is_online = cam["is_online"]
                 url = cam["url_address"]
                 alias = cam.get("alias", f"Camara {cam['ip']}")
+                cam_ip = cam["ip"]
+                desired_proto = (protocols_cfg.get(c_id) or protocols_cfg.get(cam_ip) or cam.get("protocol") or "ndi").lower()
 
                 if is_online and url:
                     active_ids.add(c_id)
                     # Create or keep worker alive
                     worker = self.workers.get(c_id)
-                    if not worker or worker.url_address != url:
+                    if not worker or worker.url_address != url or getattr(worker, "protocol", "ndi") != desired_proto:
                         if worker:
                             worker.stop()
                         new_worker = CameraStreamWorker(
                             cam_id=c_id,
-                            ip=cam["ip"],
+                            ip=cam_ip,
                             port=cam["port"],
                             ndi_name=cam["ndi_name"],
                             url_address=url,
                             alias=alias,
                             vcam=self.vcam,
                             monitoring_enabled=(self.monitoring_enabled and self.window_visible),
-                            thumb_fps=self.preview_fps
+                            thumb_fps=self.preview_fps,
+                            protocol=desired_proto
                         )
                         new_worker.recorder_manager = self.recorder_manager
                         new_worker.start()
@@ -196,12 +277,13 @@ class VideoPipeline:
                         worker.thumb_fps = self.preview_fps
                         worker.recorder_manager = self.recorder_manager
 
-                    # Always sync alias, live FPS, and resolution
+                    # Always sync alias, live FPS, resolution, and protocol
                     cam_model = self.discovery.get_camera(c_id)
                     if cam_model and worker:
                         if worker.measured_fps > 0:
                             cam_model.fps = worker.measured_fps
                         cam_model.resolution = worker.resolution
+                        cam_model.protocol = worker.protocol
 
             # Cleanup workers for cameras that went offline
             for dead_id in list(self.workers.keys()):

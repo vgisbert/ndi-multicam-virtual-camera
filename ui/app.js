@@ -263,11 +263,12 @@ function createCameraCardElement(cam) {
   card.innerHTML = `
     <!-- CABECERA DE LA TARJETA -->
     <div class="flex items-center justify-between px-0.5">
-      <div class="flex items-center gap-1">
-        <span class="badge-tally px-1.5 py-0.2 rounded font-bold text-[8.5px] uppercase tracking-wider"></span>
-        <span class="cam-alias font-sans font-bold text-[11px] text-txt-main truncate max-w-[150px]"></span>
+      <div class="flex items-center gap-1 min-w-0">
+        <span class="badge-tally px-1.5 py-0.2 rounded font-bold text-[8.5px] uppercase tracking-wider shrink-0"></span>
+        <span class="cam-proto px-1 py-0.2 rounded font-bold text-[7.5px] uppercase tracking-wider shrink-0"></span>
+        <span class="cam-alias font-sans font-bold text-[11px] text-txt-main truncate max-w-[125px]"></span>
       </div>
-      <div class="text-[9px] text-txt-muted flex items-center gap-1 font-mono">
+      <div class="text-[9px] text-txt-muted flex items-center gap-1 font-mono shrink-0">
         <span class="cam-fps text-amber-tac font-bold"></span>
         <span class="cam-res text-txt-muted/80"></span>
       </div>
@@ -341,6 +342,7 @@ function forceRefreshUI() {
 
 function applyCardData(card, cam) {
   const tallyBadge = card.querySelector(".badge-tally");
+  const protoBadge = card.querySelector(".cam-proto");
   const aliasEl = card.querySelector(".cam-alias");
   const fpsEl = card.querySelector(".cam-fps");
   const resEl = card.querySelector(".cam-res");
@@ -350,6 +352,14 @@ function applyCardData(card, cam) {
   const statusDot = card.querySelector(".status-dot");
   const offlineOverlay = card.querySelector(`#thumb-offline-${cam.cam_id}`);
   const ecoOverlay = card.querySelector(`#thumb-eco-${cam.cam_id}`);
+
+  if (protoBadge) {
+    const isRtsp = (cam.protocol === "rtsp");
+    protoBadge.textContent = isRtsp ? "RTSP 720p" : "NDI 1080p";
+    protoBadge.className = isRtsp
+      ? "cam-proto px-1 py-0.2 rounded font-bold text-[7.5px] uppercase tracking-wider shrink-0 bg-amber-dim/60 border border-amber-tac/50 text-amber-tac"
+      : "cam-proto px-1 py-0.2 rounded font-bold text-[7.5px] uppercase tracking-wider shrink-0 bg-cyan-dim/60 border border-cyan-tac/50 text-cyan-tac";
+  }
 
   if (ecoOverlay) {
     if (isMonitoringEnabled) {
@@ -610,11 +620,21 @@ function openSettings() {
 
     currentCameras.forEach(cam => {
       const row = document.createElement("div");
-      row.className = "flex items-center gap-1.5";
+      row.className = "flex items-center gap-1.5 bg-surface-lowest/40 p-1.5 rounded border border-border-tac/30";
       const displayVal = getLocalizedAlias(cam);
+      const isRtsp = (cam.protocol === "rtsp");
       row.innerHTML = `
-        <span class="text-[9px] text-txt-muted w-24 truncate">${cam.ip}:</span>
-        <input type="text" data-cam-id="${cam.cam_id}" value="${displayVal}" class="alias-input flex-1 bg-surface-lowest border border-border-tac rounded px-2 py-0.5 text-txt-main text-[9.5px] outline-none focus:border-cyan-tac transition-colors">
+        <div class="flex flex-col flex-1 gap-0.5 min-w-0">
+          <span class="text-[8.5px] font-mono text-txt-muted font-bold truncate">${cam.ip}</span>
+          <input type="text" data-cam-id="${cam.cam_id}" value="${displayVal}" placeholder="Alias..." class="alias-input bg-surface-lowest border border-border-tac rounded px-1.5 py-0.5 text-txt-main text-[9.5px] outline-none focus:border-cyan-tac transition-colors">
+        </div>
+        <div class="flex flex-col gap-0.5 w-[115px] shrink-0">
+          <span class="text-[8px] text-txt-muted uppercase font-bold" data-i18n="settings_protocol_title">${t("settings_protocol_title")}</span>
+          <select data-cam-id="${cam.cam_id}" class="protocol-select bg-surface-lowest border border-border-tac rounded px-1 py-0.5 text-txt-main text-[9px] outline-none focus:border-cyan-tac">
+            <option value="ndi" ${!isRtsp ? 'selected' : ''}>NDI (1080p)</option>
+            <option value="rtsp" ${isRtsp ? 'selected' : ''}>RTSP (720p)</option>
+          </select>
+        </div>
       `;
       const inputEl = row.querySelector("input");
       if (inputEl) {
@@ -684,6 +704,21 @@ async function saveAndCloseSettings() {
     }
   });
 
+  const protocols = {};
+  document.querySelectorAll(".protocol-select").forEach(sel => {
+    const camId = sel.getAttribute("data-cam-id");
+    const protoVal = sel.value;
+    if (camId) {
+      const cam = currentCameras.find(c => c.cam_id === camId);
+      if (cam) {
+        protocols[cam.ip] = protoVal;
+        protocols[cam.url_address] = protoVal;
+        protocols[cam.cam_id] = protoVal;
+        cam.protocol = protoVal;
+      }
+    }
+  });
+
   const previewFpsEl = document.getElementById("cfg-preview-fps");
   const previewFps = previewFpsEl ? parseInt(previewFpsEl.value, 10) : 4;
   const recDirEl = document.getElementById("cfg-recording-dir");
@@ -693,6 +728,7 @@ async function saveAndCloseSettings() {
     virtual_camera_name: vcamName,
     extra_ips: extraIps,
     aliases: aliases,
+    protocols: protocols,
     preview_fps: previewFps,
     recording_dir: recDir
   };

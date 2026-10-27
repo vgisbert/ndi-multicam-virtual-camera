@@ -52,7 +52,7 @@ def probe_tcp_port(ip_str: str, port: int = 5961, timeout_s: float = 0.4) -> Opt
     return None
 
 class CameraModel:
-    def __init__(self, cam_id: str, ip: str, port: int, mac: str, ndi_name: str, url_address: str, alias: str):
+    def __init__(self, cam_id: str, ip: str, port: int, mac: str, ndi_name: str, url_address: str, alias: str, protocol: str = "ndi"):
         self.cam_id = cam_id
         self.ip = ip
         self.port = port
@@ -60,6 +60,7 @@ class CameraModel:
         self.ndi_name = ndi_name
         self.url_address = url_address
         self.alias = alias
+        self.protocol = protocol.lower() if protocol else "ndi"
         self.is_online = False
         self.latency_ms = 0.0
         self.fps = 30.0
@@ -76,6 +77,7 @@ class CameraModel:
             "ndi_name": self.ndi_name,
             "url_address": self.url_address,
             "alias": self.alias,
+            "protocol": self.protocol,
             "is_online": self.is_online,
             "latency_ms": round(self.latency_ms, 1),
             "fps": round(self.fps, 1),
@@ -102,6 +104,7 @@ class CameraDiscoveryDaemon:
         
         # Pre-seed configured cameras so they appear in UI even before NDI responds
         aliases = self.config.get("camera_aliases", {})
+        protocols = self.config.get("camera_protocols", {})
         default_pgm = self.config.get("selected_source", "")
 
         for ip in extra_ips:
@@ -116,6 +119,7 @@ class CameraDiscoveryDaemon:
             
             # Find configured alias or auto-generate
             alias = aliases.get(f"{ip}:5961") or aliases.get(ip) or aliases.get(cam_id) or (f"Cámara {ip.split('.')[-1]}")
+            proto = protocols.get(f"{ip}:5961") or protocols.get(ip) or protocols.get(cam_id) or "ndi"
             url_address = f"{ip}:5961"
             
             cam = CameraModel(
@@ -125,7 +129,8 @@ class CameraDiscoveryDaemon:
                 mac=mac,
                 ndi_name="Nuroum V403",
                 url_address=url_address,
-                alias=alias
+                alias=alias,
+                protocol=proto
             )
             self.cameras[cam_id] = cam
 
@@ -171,8 +176,10 @@ class CameraDiscoveryDaemon:
                                 break
 
                         aliases = self.config.get("camera_aliases", {})
+                        protocols = self.config.get("camera_protocols", {})
                         if existing_cam is None and cam_id not in self.cameras:
                             alias = aliases.get(url_addr) or aliases.get(ip_part) or aliases.get(cam_id) or aliases.get(raw_name) or f"Cámara {ip_part}"
+                            proto = protocols.get(url_addr) or protocols.get(ip_part) or protocols.get(cam_id) or "ndi"
                             self.cameras[cam_id] = CameraModel(
                                 cam_id=cam_id,
                                 ip=ip_part,
@@ -180,7 +187,8 @@ class CameraDiscoveryDaemon:
                                 mac=mac,
                                 ndi_name=raw_name,
                                 url_address=url_addr,
-                                alias=alias
+                                alias=alias,
+                                protocol=proto
                             )
                         else:
                             target_cam = existing_cam if existing_cam else self.cameras[cam_id]
@@ -191,6 +199,9 @@ class CameraDiscoveryDaemon:
                             cfg_alias = aliases.get(url_addr) or aliases.get(ip_part) or aliases.get(target_cam.cam_id)
                             if cfg_alias and target_cam.alias != cfg_alias:
                                 target_cam.alias = cfg_alias
+                            cfg_proto = protocols.get(url_addr) or protocols.get(ip_part) or protocols.get(target_cam.cam_id)
+                            if cfg_proto:
+                                target_cam.protocol = cfg_proto.lower()
 
                     # 3. Health check all cameras (latency probe)
                     now = time.time()
@@ -272,6 +283,7 @@ class CameraDiscoveryDaemon:
 
             existing_ips = {c.ip for c in self.cameras.values()}
             aliases = self.config.get("camera_aliases", {})
+            protocols = self.config.get("camera_protocols", {})
             for ip in clean_ips:
                 if ip not in existing_ips:
                     try:
@@ -282,6 +294,7 @@ class CameraDiscoveryDaemon:
                     clean_mac = "".join(c for c in mac if c.isalnum()).lower()
                     cam_id = f"cam-{clean_mac}"
                     alias = aliases.get(f"{ip}:5961") or aliases.get(ip) or aliases.get(cam_id) or f"Cámara {ip.split('.')[-1]}"
+                    proto = protocols.get(f"{ip}:5961") or protocols.get(ip) or protocols.get(cam_id) or "ndi"
                     self.cameras[cam_id] = CameraModel(
                         cam_id=cam_id,
                         ip=ip,
@@ -289,7 +302,8 @@ class CameraDiscoveryDaemon:
                         mac=mac,
                         ndi_name="Nuroum V403",
                         url_address=f"{ip}:5961",
-                        alias=alias
+                        alias=alias,
+                        protocol=proto
                     )
 
             # Clean up offline pre-seeded cameras that were removed from clean_ips

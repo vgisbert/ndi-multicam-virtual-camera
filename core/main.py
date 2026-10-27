@@ -7,7 +7,11 @@ import os
 import sys
 import json
 import time
+import signal
+import atexit
 import threading
+import subprocess
+from typing import Optional
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse
 
@@ -42,7 +46,50 @@ discovery_daemon = None
 vcam_manager = None
 video_pipeline = None
 webview_window = None
+server_instance = None
 is_window_pinned = False
+
+_shutdown_lock = threading.Lock()
+_is_shutting_down = False
+
+def cleanup_all(reason="exit"):
+    global _is_shutting_down, server_instance, video_pipeline, vcam_manager, discovery_daemon
+    with _shutdown_lock:
+        if _is_shutting_down:
+            return
+        _is_shutting_down = True
+
+    print(f"\n[INFO] Ejecutando cierre ordenado y liberacion de recursos ({reason})...", flush=True)
+
+    # 1. Detener pipeline de video y grabador MKV (asegura guardado de videos y finaliza subprocesos)
+    if video_pipeline:
+        try:
+            video_pipeline.stop()
+        except Exception as e:
+            print(f"[WARN] Error al detener pipeline: {e}", flush=True)
+
+    # 2. Cerrar TODAS las camaras virtuales DirectShow (libera memoria compartida y desbloquea UnityCaptureFilter64.dll)
+    if vcam_manager:
+        try:
+            vcam_manager.stop_all()
+        except Exception as e:
+            print(f"[WARN] Error al liberar dispositivos virtuales: {e}", flush=True)
+
+    # 3. Detener demonio de autodescubrimiento NDI
+    if discovery_daemon:
+        try:
+            discovery_daemon.stop()
+        except Exception as e:
+            print(f"[WARN] Error al detener discovery: {e}", flush=True)
+
+    # 4. Cerrar socket HTTP inmediatamente sin esperar keep-alive
+    if server_instance:
+        try:
+            server_instance.server_close()
+        except Exception:
+            pass
+
+    print("[OK] Todos los recursos, dispositivos virtuales y flujos liberados correctamente.", flush=True)
 
 def load_config():
     global app_config
@@ -317,6 +364,17 @@ class TacticalHttpHandler(SimpleHTTPRequestHandler):
                         if cam.url_address == k or cam.ip == k or cam.cam_id == k:
                             cam.alias = v if v else f"Cámara {cam.ip.split('.')[-1]}"
 
+            protocols = payload.get("protocols")
+            if protocols:
+                if "camera_protocols" not in app_config:
+                    app_config["camera_protocols"] = {}
+                app_config["camera_protocols"].update(protocols)
+                if discovery_daemon:
+                    for k, p in protocols.items():
+                        for cam in discovery_daemon.cameras.values():
+                            if cam.url_address == k or cam.ip == k or cam.cam_id == k:
+                                cam.protocol = p.lower()
+
             save_config(app_config)
             self._send_json({"success": True, "config": app_config})
             return
@@ -335,18 +393,126 @@ class TacticalHttpHandler(SimpleHTTPRequestHandler):
         # Mute standard HTTP request logs to keep terminal clean
         pass
 
-def start_http_server(port: int = 8765):
+def kill_process_by_pid(pid: int):
+    """Fuerza la terminación de un proceso por PID usando taskkill y CIM como fallback."""
+    if pid <= 0 or pid == os.getpid():
+        return
+    try:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+    try:
+        ps_cmd = f"Invoke-CimMethod -Query 'select * from Win32_Process where ProcessId = {pid}' -MethodName 'Terminate' -ErrorAction SilentlyContinue"
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+def find_pid_by_port(port: int) -> Optional[int]:
+    """Detecta el PID del proceso de Windows que retiene el puerto TCP especificado."""
+    try:
+        output = subprocess.check_output(f"netstat -ano -p tcp | findstr :{port}", shell=True).decode("ascii", errors="ignore")
+        for line in output.strip().splitlines():
+            parts = line.split()
+            if len(parts) >= 5 and "LISTENING" in parts[3].upper():
+                return int(parts[4])
+    except Exception:
+        pass
+    return None
+
+def kill_orphan_instances():
+    """Detecta y elimina instancias zombies previas de la aplicacion y libera puertos bloqueados."""
+    my_pid = os.getpid()
+
+    # 1. Liberar puerto 8765 si está retenido por un proceso previo o zombie
+    port_pid = find_pid_by_port(8765)
+    if port_pid and port_pid != my_pid:
+        print(f"[STARTUP] Detectado puerto 8765 retenido por proceso zombie (PID: {port_pid}). Liberando...", flush=True)
+        kill_process_by_pid(port_pid)
+        time.sleep(0.3)
+
+    # 2. Si se ejecuta como .exe empaquetado, cerrar cualquier otra instancia previa del mismo ejecutable
+    if getattr(sys, "frozen", False):
+        exe_name = os.path.basename(sys.executable)
+        exe_stem = os.path.splitext(exe_name)[0]
+        try:
+            ps_cmd = f"Get-Process -Name '{exe_stem}' -ErrorAction SilentlyContinue | Where-Object {{ $_.Id -ne {my_pid} }} | ForEach-Object {{ $_.Id }}"
+            res = subprocess.check_output(["powershell", "-NoProfile", "-Command", ps_cmd]).decode("ascii", errors="ignore")
+            for p_str in res.split():
+                if p_str.strip().isdigit():
+                    p = int(p_str.strip())
+                    if p != my_pid:
+                        print(f"[STARTUP] Finalizando instancia zombie anterior de {exe_name} (PID: {p})...", flush=True)
+                        kill_process_by_pid(p)
+        except Exception:
+            pass
+
+def start_http_server(base_port: int = 8765) -> tuple:
+    global server_instance
     class ReusableThreadingServer(ThreadingHTTPServer):
         allow_reuse_address = True
+        daemon_threads = True
 
-    server = ReusableThreadingServer(("127.0.0.1", port), TacticalHttpHandler)
-    t = threading.Thread(target=server.serve_forever, daemon=True, name="TacticalHttpServer")
+        def handle_error(self, request, client_address):
+            # Silenciar desconexiones forzosas durante el cierre de la aplicacion
+            pass
+
+    server = None
+    actual_port = base_port
+
+    # Intentar base_port y hasta 10 puertos consecutivos si hubiera colisión insalvable
+    for p in range(base_port, base_port + 10):
+        try:
+            server = ReusableThreadingServer(("127.0.0.1", p), TacticalHttpHandler)
+            actual_port = p
+            break
+        except OSError:
+            # Reintentar liberar el puerto si estaba tomado
+            pid = find_pid_by_port(p)
+            if pid and pid != os.getpid():
+                kill_process_by_pid(pid)
+                time.sleep(0.2)
+                try:
+                    server = ReusableThreadingServer(("127.0.0.1", p), TacticalHttpHandler)
+                    actual_port = p
+                    break
+                except OSError:
+                    continue
+
+    if not server:
+        # Fallback a puerto efímero asignado por el sistema
+        server = ReusableThreadingServer(("127.0.0.1", 0), TacticalHttpHandler)
+        actual_port = server.server_address[1]
+
+    server_instance = server
+
+    def _safe_serve():
+        try:
+            server.serve_forever()
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_safe_serve, daemon=True, name="TacticalHttpServer")
     t.start()
-    print(f"[OK] Servidor local de interfaz táctica activo en http://127.0.0.1:{port}")
-    return server
+    print(f"[OK] Servidor local de interfaz táctica activo en http://127.0.0.1:{actual_port}")
+    return server, actual_port
 
 def main():
     global discovery_daemon, vcam_manager, video_pipeline, webview_window, is_window_pinned
+
+    # 0. Limpiar cualquier instancia zombie previa y asegurar puerto libre (Anti-White-Screen)
+    kill_orphan_instances()
+
+    # Registrar handlers de salida del sistema operativo
+    def _sig_handler(sig, frame):
+        cleanup_all(reason=f"signal_{sig}")
+        os._exit(0)
+
+    try:
+        signal.signal(signal.SIGINT, _sig_handler)
+        signal.signal(signal.SIGTERM, _sig_handler)
+    except Exception:
+        pass
+    atexit.register(cleanup_all, reason="atexit")
 
     print("=" * 65, flush=True)
     print("   NDI VIRTUAL CAMERA - TACTICAL BROADCAST SUITE", flush=True)
@@ -375,8 +541,7 @@ def main():
     video_pipeline.start()
 
     # 5. Start embedded UI server
-    port = 8765
-    server = start_http_server(port=port)
+    server, active_port = start_http_server(base_port=8765)
 
     # 6. Launch Desktop Window using pywebview (WebView2 Evergreen)
     headless = "--headless" in sys.argv or "-h" in sys.argv
@@ -388,7 +553,7 @@ def main():
             initial_h = 395 if initial_cams <= 1 else 665
             webview_window = webview.create_window(
                 title="Cámara Virtual NDI",
-                url=f"http://127.0.0.1:{port}",
+                url=f"http://127.0.0.1:{active_port}",
                 width=420,
                 height=initial_h,
                 resizable=True,
@@ -406,13 +571,23 @@ def main():
                 if video_pipeline:
                     video_pipeline.set_window_visibility(True)
 
+            def _on_window_closing():
+                cleanup_all(reason="window_closing")
+                return True
+
+            def _on_window_closed():
+                cleanup_all(reason="window_closed")
+                os._exit(0)
+
             webview_window.events.minimized += _on_window_minimized
             webview_window.events.restored += _on_window_restored
+            webview_window.events.closing += _on_window_closing
+            webview_window.events.closed += _on_window_closed
 
             webview.start()
         except Exception as e:
             print(f"[WARN] No se pudo lanzar la ventana webview nativa: {e}")
-            print(f"[INFO] Puedes abrir la consola en tu navegador: http://127.0.0.1:{port}")
+            print(f"[INFO] Puedes abrir la consola en tu navegador: http://127.0.0.1:{active_port}")
             print("Presiona Ctrl+C para salir.")
             try:
                 while True:
@@ -420,7 +595,7 @@ def main():
             except KeyboardInterrupt:
                 pass
     else:
-        print(f"[INFO] Modo Headless activo. Servidor disponible en: http://127.0.0.1:{port}")
+        print(f"[INFO] Modo Headless activo. Servidor disponible en: http://127.0.0.1:{active_port}")
         print("Presiona Ctrl+C para salir.")
         try:
             while True:
@@ -429,32 +604,10 @@ def main():
             pass
 
     # Cleanup upon exit
-    print("\nCerrando servicios...")
-    if server:
-        try:
-            server.shutdown()
-        except Exception:
-            pass
-    if video_pipeline:
-        try:
-            video_pipeline.stop()
-        except Exception:
-            pass
-    if vcam_manager:
-        try:
-            vcam_manager.stop_all()
-        except Exception:
-            pass
-    if discovery_daemon:
-        try:
-            discovery_daemon.stop()
-        except Exception:
-            pass
+    cleanup_all(reason="main_exit")
     print("=" * 65)
     print("NDI Virtual Camera finalizado con exito.")
     print("=" * 65)
-
-    # Salida limpia inmediata
     os._exit(0)
 
 if __name__ == "__main__":

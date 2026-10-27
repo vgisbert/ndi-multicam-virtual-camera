@@ -17,6 +17,9 @@ Write-Host ""
 $dir = Split-Path -Parent $PSCommandPath
 Set-Location $dir
 
+# Cerrar cualquier instancia previa que pueda retener bloqueada la DLL en memoria
+Get-Process -Name "NDI Virtual Camera" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
 # 1. Registrar DLL de 64 bits
 $dll64 = Join-Path $dir "UnityCaptureFilter64.dll"
 Write-Host "[1/3] Registrando dispositivos en 64 bits con UnityCaptureFilter64.dll..." -ForegroundColor Yellow
@@ -43,41 +46,52 @@ if (Test-Path $dll32) {
     Write-Host "`n[2/3] Filtro de 32 bits omitido (opcional)." -ForegroundColor DarkGray
 }
 
-# 3. Asignar nombres amigables en DirectShow
-Write-Host "`n[3/3] Asignando nombres amigables en DirectShow..." -ForegroundColor Yellow
-$instKey = "HKLM:\SOFTWARE\Classes\CLSID\{860BB310-5D01-11d0-BD3B-00A0C911CE86}\Instance"
+# 3. Asignar nombres amigables en DirectShow y pyvirtualcam
+Write-Host "`n[3/3] Asignando nombres limpios para Zoom, Teams y OBS..." -ForegroundColor Yellow
 
-try {
-    $keys = Get-ChildItem $instKey -ErrorAction SilentlyContinue
+$name1 = "NDI Camara 1"
+$name2 = "NDI Camara 2"
 
-    $k1 = $keys | Where-Object { 
-        $fn = (Get-ItemProperty $_.PSPath).FriendlyName
-        $fn -like "*Unity Video Capture*" -and $fn -notlike "*#2*" -or $fn -like "*Camara 1*"
-    }
-    $k2 = $keys | Where-Object { 
-        $fn = (Get-ItemProperty $_.PSPath).FriendlyName
-        $fn -like "*Unity Video Capture #2*" -or $fn -like "*#2*" -or $fn -like "*Camara 2*"
-    }
+# Ubicaciones 64-bit y 32-bit (HKLM y HKCU)
+$paths = @(
+    @{ Root = "HKLM:\SOFTWARE\Classes"; Dev1 = "{5C2CD55C-92AD-4999-8666-912BD3E70010}"; Dev2 = "{5C2CD55C-92AD-4999-8666-912BD3E70012}" },
+    @{ Root = "HKLM:\SOFTWARE\WOW6432Node\Classes"; Dev1 = "{5C2CD55C-92AD-4999-8666-912BD3E70020}"; Dev2 = "{5C2CD55C-92AD-4999-8666-912BD3E70022}" },
+    @{ Root = "HKCU:\Software\Classes"; Dev1 = "{5C2CD55C-92AD-4999-8666-912BD3E70010}"; Dev2 = "{5C2CD55C-92AD-4999-8666-912BD3E70012}" }
+)
 
-    if ($k1) {
-        Set-ItemProperty -Path $k1[0].PSPath -Name "FriendlyName" -Value "Camara 1 - Frontal (NDI)"
-        Write-Host "  [OK] Dispositivo 1 configurado: 'Camara 1 - Frontal (NDI)'" -ForegroundColor Green
-    }
+foreach ($p in $paths) {
+    try {
+        # Actualizar nombres CLSID principales (utilizados por pyvirtualcam)
+        $clsid1 = "$($p.Root)\CLSID\$($p.Dev1)"
+        $clsid2 = "$($p.Root)\CLSID\$($p.Dev2)"
+        if (Test-Path $clsid1) { Set-ItemProperty -Path $clsid1 -Name "(default)" -Value $name1 -ErrorAction SilentlyContinue }
+        if (Test-Path $clsid2) { Set-ItemProperty -Path $clsid2 -Name "(default)" -Value $name2 -ErrorAction SilentlyContinue }
 
-    if ($k2) {
-        Set-ItemProperty -Path $k2[0].PSPath -Name "FriendlyName" -Value "Camara 2 - Lateral (NDI)"
-        Write-Host "  [OK] Dispositivo 2 configurado: 'Camara 2 - Lateral (NDI)'" -ForegroundColor Green
+        # Actualizar instancias de Video Input Category (utilizadas por Zoom, OBS, etc.)
+        $inst1 = "$($p.Root)\CLSID\{860BB310-5D01-11d0-BD3B-00A0C911CE86}\Instance\$($p.Dev1)"
+        $inst2 = "$($p.Root)\CLSID\{860BB310-5D01-11d0-BD3B-00A0C911CE86}\Instance\$($p.Dev2)"
+        if (Test-Path $inst1) {
+            Set-ItemProperty -Path $inst1 -Name "FriendlyName" -Value $name1 -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $inst1 -Name "DevicePath" -Value "UnityCapture:0" -ErrorAction SilentlyContinue
+        }
+        if (Test-Path $inst2) {
+            Set-ItemProperty -Path $inst2 -Name "FriendlyName" -Value $name2 -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $inst2 -Name "DevicePath" -Value "UnityCapture:1" -ErrorAction SilentlyContinue
+        }
+    } catch {
+        # Continuar con el siguiente bloque si hay error
     }
-} catch {
-    Write-Host "  [AVISO] No se pudo renombrar en registro: $($_.Exception.Message)" -ForegroundColor Yellow
 }
+
+Write-Host "  [OK] Dispositivo 1 configurado: '$name1'" -ForegroundColor Green
+Write-Host "  [OK] Dispositivo 2 configurado: '$name2'" -ForegroundColor Green
 
 Write-Host ""
 Write-Host "======================================================" -ForegroundColor Cyan
 Write-Host "  Instalacion multicamara completada con exito." -ForegroundColor Green
 Write-Host "  Dispositivos listos para OBS, ManyCam, Zoom y Teams:" -ForegroundColor Green
-Write-Host "    1. Camara 1 - Frontal (NDI)" -ForegroundColor White
-Write-Host "    2. Camara 2 - Lateral (NDI)" -ForegroundColor White
+Write-Host "    1. $name1" -ForegroundColor White
+Write-Host "    2. $name2" -ForegroundColor White
 Write-Host "======================================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Presiona cualquier tecla para cerrar esta ventana..." -ForegroundColor DarkGray

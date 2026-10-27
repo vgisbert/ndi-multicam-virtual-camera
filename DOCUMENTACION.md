@@ -292,6 +292,157 @@ Las cámaras de tipo Nuroum V403 transmiten mediante el protocolo comprimido NDI
 | **Grabación CPU (Ryzen 1600)** | ~35% CPU | ~80% CPU (Al límite) | Inviable sin aceleración hardware |
 | **Disposición UI** | Columna única lateral | Cuadrícula 2x2 (*Grid*) | Cuadrícula 4x2 o pestañas |
 
+---
+
+## 10. Ingesta Híbrida NDI (1080p) vs RTSP (720p) por Cámara (Ahorro de Carga en Origen)
+
+### 10.1. Diagnóstico de Rendimiento en Equipos con Procesadores Moderados (ej. AMD Ryzen 5 1600)
+Al operar en equipos de procesador moderado como el AMD Ryzen 5 1600 (6 núcleos / 12 hilos) o mini-PCs, procesar 2 o más flujos continuos NDI Full HD a 1920x1080 (descompresión, conversión de espacio de color BGR, copia a memoria compartida DirectShow e inyección en codificador FFmpeg) impone una carga de cómputo relevante si ambas señales permanecen a resolución máxima.
+
+Para optimizar el uso de recursos **en origen** (sin realizar un redimensionamiento por software en la CPU del ordenador que consumiría ciclos adicionales):
+* Se descubrió mediante ingeniería inversa que las cámaras **Nuroum V403** entregan un flujo RTSP nativo secundario en el puerto estándar `554` (`rtsp://<ip>:554/live/mainStream`).
+* Dicho flujo emite a resolución **HD 720p (1280x720) a 25.0 FPS constantes en formato H.264**, sin requerir credenciales de autenticación.
+* **Reducción de Píxeles:** Pasar de 1920x1080 (2.073.600 px/frame) a 1280x720 (921.600 px/frame) supone una **reducción del 55,6% en el volumen de datos brutos procesados por segundo**, aliviando drásticamente el bus PCIe, la memoria RAM y el codificador de vídeo.
+
+### 10.2. Selector Dinámico e Independiente por Cámara
+En la ventana modal de Configuración, cada cámara detectada dispone de su propio selector de protocolo y resolución:
+* **`NDI (1080p)`:** Calidad broadcast Full HD máxima, con latencia ultra-baja vía NDI C SDK.
+* **`RTSP (720p)`:** Flujo HD de alta eficiencia capturado con transporte TCP de baja latencia (`fflags;nobuffer|max_delay;500000|stimeout;2000000`).
+
+```mermaid
+flowchart TD
+    subgraph Cam1["Cámara 1 (Nuroum V403)"]
+        StreamNDI1["NDI 1080p (TCP 5961)"]
+        StreamRTSP1["RTSP 720p (TCP 554)"]
+    end
+    subgraph Cam2["Cámara 2 (Nuroum V403)"]
+        StreamNDI2["NDI 1080p (TCP 5961)"]
+        StreamRTSP2["RTSP 720p (TCP 554)"]
+    end
+
+    subgraph Suite["NDI Virtual Camera Pipeline Coordinator"]
+        Selector1{"Selector Cámara 1<br/>(config.json)"}
+        Selector2{"Selector Cámara 2<br/>(config.json)"}
+        WorkerNDI["Worker NDI Loop"]
+        WorkerRTSP["Worker RTSP Loop"]
+    end
+
+    subgraph Salidas["Salidas Transparentes"]
+        DS1["DirectShow Dev 1"]
+        DS2["DirectShow Dev 2"]
+        MKV["Grabador Dual MKV"]
+        Thumb["Miniaturas UI"]
+    end
+
+    StreamNDI1 -.-> Selector1
+    StreamRTSP1 --> Selector1
+    StreamNDI2 --> Selector2
+    StreamRTSP2 -.-> Selector2
+
+    Selector1 --> WorkerRTSP
+    Selector2 --> WorkerNDI
+
+    WorkerRTSP --> DS1
+    WorkerRTSP --> MKV
+    WorkerRTSP --> Thumb
+
+    WorkerNDI --> DS2
+    WorkerNDI --> MKV
+    WorkerNDI --> Thumb
+```
+
+### 10.3. Conmutación en Caliente (*Hot-Switching*) sin Reinicio
+El coordinador de hilos (`VideoPipeline._coordinator_loop` en [`core/video_pipeline.py`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/core/video_pipeline.py)) compara en tiempo real el protocolo deseado por el usuario con el protocolo en ejecución de cada `CameraStreamWorker`. Si el usuario cambia una cámara de NDI a RTSP o viceversa:
+1. El hilo activo finaliza de forma segura y controlada liberando sus descriptores de red.
+2. Se instancia el nuevo worker adecuado (NDI C receiver o RTSP low-latency client) sin afectar a las otras cámaras.
+3. La interfaz web actualiza al instante la insignia visual de la tarjeta (`NDI 1080p` en cian / `RTSP 720p` en ámbar).
+4. El dispositivo DirectShow asociado y la grabación MKV continúan recibiendo fotogramas fluidamente.
+
+---
+
+## 11. Arquitectura de Ciclo de Vida: Limpieza Pre y Post Aplicación (Anti-Zombies y Desbloqueo de Drivers)
+
+### 11.1. Diagnóstico de Problemas de Sesión y Bloqueo en Windows
+Durante sesiones continuadas de uso y pruebas, se identificaron tres incidencias clásicas en aplicaciones multimedia bajo Windows:
+1. **Instancias Zombies Huérfanas:** Al cerrar la ventana, el proceso `python.exe` o `NDI Virtual Camera.exe` permanecía invisible en la tabla de procesos debido a bloqueos síncronos en el servidor HTTP (`server.shutdown()` esperando conexiones *keep-alive* activas del frontend).
+2. **Bloqueo Persistente de Drivers DirectShow (`UnityCaptureFilter64.dll`):** Al quedar procesos zombies reteniéndola, la DLL del driver DirectShow quedaba cargada en memoria por el kernel de Windows. Windows impedía sobrescribir, compilar o reinstalar los archivos del driver ("Acceso denegado / Archivo en uso por otro proceso") hasta reiniciar el equipo.
+3. **Pantalla en Blanco al Arrancar (*White Screen of Death*):** Si una sesión previa zombie dejaba el puerto TCP `8765` en estado `LISTEN` o `CLOSE_WAIT`, la nueva instancia de la aplicación no lograba servir la web local y `pywebview` abría una ventana vacía sin interfaz gráfica.
+
+```mermaid
+flowchart TD
+    subgraph Arranque["1. Protocolo PRE-Aplicación (Startup)"]
+        CheckZombie["kill_orphan_instances()<br/>Sondeo de PIDs anteriores"]
+        CheckPort["find_pid_by_port(8765)<br/>Verificar socket TCP"]
+        KillZombie["Terminación forzosa de zombies<br/>taskkill /F + CIM Terminate"]
+        DynamicPort{"¿Puerto 8765 ocupado?"}
+        Use8765["Usar 8765 (Estándar)"]
+        FallbackPort["Asignar puerto dinámico<br/>8766, 8767... (Anti-White-Screen)"]
+    end
+
+    subgraph Ejecucion["2. Sesión Activa"]
+        Webview["Ventana Táctica WebView2"]
+        Engine["Ingesta Híbrida NDI/RTSP + VCam DirectShow"]
+    end
+
+    subgraph Cierre["3. Protocolo POST-Aplicación (Shutdown)"]
+        Trigger["Evento 'X' (closing) / SIGINT / atexit"]
+        MutexLock["Mutex Atómico (_shutdown_lock)"]
+        StopPipe["1. Detener Pipeline y Grabador MKV (FFmpeg)"]
+        CloseVCam["2. Cerrar Cámaras Virtuales DirectShow<br/>Liberar memoria y descargar DLLs"]
+        StopDisc["3. Detener Demonio de Autodescubrimiento"]
+        CloseSock["4. server_close() socket HTTP inmediato"]
+        ForceExit["5. os._exit(0) Terminación Limpia Garantizada"]
+    end
+
+    CheckZombie --> CheckPort
+    CheckPort --> KillZombie
+    KillZombie --> DynamicPort
+    DynamicPort -- "No" --> Use8765
+    DynamicPort -- "Sí (inquebrantable)" --> FallbackPort
+    Use8765 --> Webview
+    FallbackPort --> Webview
+    Webview <--> Engine
+
+    Webview --> Trigger
+    Trigger --> MutexLock
+    MutexLock --> StopPipe
+    StopPipe --> CloseVCam
+    CloseVCam --> StopDisc
+    StopDisc --> CloseSock
+    CloseSock --> ForceExit
+```
+
+### 11.2. Protocolo de Limpieza PRE-Aplicación (Arranque Seguro)
+Al iniciarse la aplicación ([`core/main.py`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/core/main.py)), antes de crear ventanas o inicializar dispositivos multimedia:
+1. **Inspección de Procesos Huérfanos:**
+   - Si se ejecuta como binario `.exe`, localiza mediante PowerShell/WMI cualquier otro proceso `NDI Virtual Camera.exe` cuyo PID difiera del actual (`os.getpid()`) y lo finaliza.
+   - Si se ejecuta desde el entorno virtual de Python, inspecciona la red local y los procesos asociados a `core/main.py`.
+2. **Inspección de Socket Local TCP (`find_pid_by_port`):**
+   - Ejecuta un sondeo nativo de conexiones activas. Si detecta que un proceso previo mantiene retenido el puerto `8765`, extrae su PID y lo destruye de inmediato mediante combinación de `taskkill /F /T` y el método WMI `Win32_Process.Terminate()`.
+3. **Asignación Dinámica de Puerto de Rescate (*Anti-White-Screen*):**
+   - Si por alguna directiva de seguridad del sistema operativo el puerto `8765` continuara ocupado, `start_http_server()` prueba automáticamente los puertos `8766` a `8775`. Al encontrar un puerto libre, levanta el servidor táctico y conecta `pywebview` exactamente a esa dirección (`http://127.0.0.1:<puerto_activo>`), eliminando por completo la posibilidad de pantallas en blanco.
+
+### 11.3. Protocolo de Limpieza POST-Aplicación (Cierre Atómico)
+Para asegurar que **nunca más queden procesos en segundo plano ni drivers bloqueados**:
+1. **Manejador Atómico Protegido (`cleanup_all`):**
+   - Implementado con cerrojo de exclusión mutua (`_shutdown_lock`) para evitar que múltiples eventos de cierre compitan entre sí.
+2. **Inversión Estricta del Orden de Cierre:**
+   - **Paso 1:** Se detiene el pipeline de vídeo y se cierran las grabaciones MKV de FFmpeg para sellar e indexar correctamente los ficheros de vídeo.
+   - **Paso 2:** Se llama a `VirtualCameraManager.stop_all()`. Cada dispositivo virtual `VirtualCameraDevice` cancela su hilo de renderizado, invoca explícitamente `cam.close()` en `pyvirtualcam` y desmapea los canales de memoria compartida Win32. Al no quedar descriptores abiertos, Windows descarga de inmediato `UnityCaptureFilter64.dll`.
+   - **Paso 3:** Se detiene el demonio de autodescubrimiento NDI y se destruye el objeto NDI Finder.
+   - **Paso 4:** Se cierra el socket HTTP con `server.server_close()` en lugar de `shutdown()`, evitando esperas innecesarias de *keep-alive*.
+   - **Paso 5:** Se invoca `os._exit(0)` para terminar el proceso inmediatamente a nivel de kernel, impidiendo que hilos secundarios de C/C++ queden como zombies.
+3. **Enganches a Eventos de Ventana y Señales:**
+   - `webview_window.events.closing`: inicia la liberación en el instante en que el usuario hace clic en el aspa `X` de Windows.
+   - `webview_window.events.closed`: ejecuta la salida definitiva `os._exit(0)`.
+   - Manejadores de señal `SIGINT` (Ctrl+C), `SIGTERM` y `atexit.register()`.
+
+### 11.4. Resiliencia en Compilación y Despliegue (`build_exe.py`)
+- **Rutina `safe_copy_file()`:** Si al compilar o actualizar la carpeta `dist_portable/` Windows detecta que un archivo (como un ejecutable o DLL) está siendo retenido por un proceso externo, el script renombra automáticamente el archivo en disco a `.old` (acción permitida por el sistema de archivos NTFS aun con *file locks* abiertos) y escribe el nuevo archivo limpio en su lugar, evitando que el compilador aborte por `PermissionError (WinError 32)`.
+- **Scripts de Instalación de Drivers:** Tanto [`driver/instalar_multicamara.ps1`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/driver/instalar_multicamara.ps1) como [`driver/desinstalar_multicamara.ps1`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/driver/desinstalar_multicamara.ps1) detienen preventivamente cualquier proceso de cámara virtual antes de registrar o desregistrar las librerías con `regsvr32`.
+
+
+
 
 
 

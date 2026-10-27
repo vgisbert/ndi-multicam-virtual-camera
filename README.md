@@ -17,9 +17,18 @@
 2. **Colisión de Nombres NDI Duplicados:**  
    Resuelve el problema de cámaras NDI de bajo coste (como las *Nuroum V403* / *Hamedal*) que emiten por defecto con el nombre idéntico `LOCALHOST (Nuroum Cam V403-)`. El sistema resuelve la dirección física MAC real (`iphlpapi.SendARP`) a nivel de Capa 2 y asocia cada flujo NDI por socket y puerto exacto (`<IP_CAM_1>:5961`, `<IP_CAM_2>:5961`), garantizando que cada cámara alimenta su canal virtual sin mezclas.
 
-3. **Arquitectura Dual:**  
-   * **Entorno de desarrollo Python:** Servidor HTTP local + GUI en PyWebView (`arrancar.bat`).
-   * **Suite Nativa Portable (Tauri v2 + Rust):** Ejecutable ultraligero de **~3 MB** (`NDI-Virtual-Camera.exe`), arranque instantáneo (<0.05 s), bajo consumo de RAM (<25 MB) y **cero dependencias de Python** en el equipo de destino.
+3. **Ingesta Híbrida Dinámica (NDI 1080p vs RTSP 720p):**  
+   Permite seleccionar individualmente para cada cámara su protocolo de captura. El modo RTSP HD (1280x720 @ 25 FPS) aprovecha el flujo secundario nativo del sensor de la cámara en origen, reduciendo en un 55,6% el volumen de píxeles procesados por segundo para garantizar fluidez total en ordenadores con procesadores moderados (ej. AMD Ryzen 5, mini-PCs Intel N100) sin perder calidad DirectShow. Conmutación en caliente (*hot-switching*) sin reiniciar la app.
+
+4. **Grabación Dual Simultánea MKV (Hardware Accelerated):**  
+   Grabador integrado que emite y almacena simultáneamente ambas señales en ficheros Matroska MKV con detección automática de aceleradores de hardware (`h264_nvenc` de NVIDIA, `h264_qsv` de Intel, `h264_amf` de AMD o `libx264 ultrafast` por CPU). Los ficheros son inmunes a cortes eléctricos y no degradan la entrega a la cámara virtual.
+
+5. **Ciclo de Vida Blindado y Desbloqueo de Drivers:**  
+   Protocolo de arranque preventivo contra instancias zombies anteriores (con reasignación de puerto anti-pantalla blanca) y cierre atómico ordenado que descarga inmediatamente las librerías DirectShow (`UnityCaptureFilter64.dll`), evitando el típico problema de Windows donde los archivos quedan bloqueados hasta reiniciar el PC.
+
+6. **Arquitectura y Distribución Portable:**  
+   * **Entorno de desarrollo Python:** Servidor HTTP táctico local + GUI en PyWebView (`arrancar.bat`).
+   * **Suite Portable Lista para Usar:** Paquete empaquetado en [`dist_portable/`](file:///dist_portable/) con ejecutable autónomo (`NDI Virtual Camera.exe`), dependencias NDI y FFmpeg integradas, y paquete comprimido `.zip` listo para pendrive.
 
 ---
 

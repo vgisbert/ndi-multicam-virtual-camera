@@ -118,8 +118,11 @@ class VirtualCameraDevice:
         fps_counter = 0
         fps_timer = time.time()
 
-        while self._running and self._cam:
+        while self._running:
             with self._lock:
+                cam = self._cam
+                if not cam or not self._running:
+                    break
                 now = time.time()
                 if self._current_frame is not None and (now - self._last_frame_time < 0.8):
                     frame_to_send = self._current_frame
@@ -127,7 +130,7 @@ class VirtualCameraDevice:
                     frame_to_send = self._render_standby_frame()
 
             try:
-                self._cam.send(frame_to_send)
+                cam.send(frame_to_send)
                 self.frames_sent += 1
                 fps_counter += 1
 
@@ -136,19 +139,21 @@ class VirtualCameraDevice:
                     fps_counter = 0
                     fps_timer = time.time()
 
-                self._cam.sleep_until_next_frame()
+                if not self._running:
+                    break
+                cam.sleep_until_next_frame()
             except Exception as e:
                 time.sleep(target_interval)
 
     def stop(self):
         self._running = False
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=1.0)
+            self._thread.join(timeout=1.5)
         if self._cam:
             try:
                 self._cam.close()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[WARN] Error al cerrar dispositivo virtual {self.channel_id}: {e}", flush=True)
             self._cam = None
         self.is_active = False
         self.current_fps = 0.0
@@ -206,10 +211,10 @@ class VirtualCameraManager:
         all_ok = True
         # Device names for UnityCapture multi-camera backend
         device_names = [
-            "Unity Video Capture",
-            "Unity Video Capture #2",
-            "Unity Video Capture #3",
-            "Unity Video Capture #4"
+            "NDI Camara 1",
+            "NDI Camara 2",
+            "NDI Camara 3",
+            "NDI Camara 4"
         ]
 
         # First check if unitycapture is installed
@@ -247,8 +252,12 @@ class VirtualCameraManager:
 
     def stop_all(self):
         with self._lock:
-            for dev in self.devices.values():
-                dev.stop()
+            for dev in list(self.devices.values()):
+                try:
+                    dev.stop()
+                except Exception as e:
+                    print(f"[WARN] Error al detener dispositivo virtual: {e}", flush=True)
+            self.devices.clear()
         self.is_active = False
 
     def stop(self):

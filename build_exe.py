@@ -21,6 +21,12 @@ print("   NDI VIRTUAL CAMERA - COMPILADOR A EJECUTABLE (.EXE)")
 print("   Generando distribucion portable para Windows 10/11")
 print("=" * 65)
 
+# Terminar cualquier instancia previa del ejecutable para evitar bloqueos de archivos en dist
+try:
+    subprocess.run(["taskkill", "/F", "/IM", "NDI Virtual Camera.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+except Exception:
+    pass
+
 # 1. Crear el archivo spec optimizado
 spec_content = '''# -*- mode: python ; coding: utf-8 -*-
 import os
@@ -179,8 +185,8 @@ PASO 1 (Solo la primera vez que se use en este ordenador):
       "instalar_driver_multicamara.bat" -> Ejecutar como Administrador.
   
   Esto registrara en Windows los dos dispositivos virtuales:
-    - "Camara 1 - Frontal (NDI)"
-    - "Camara 2 - Lateral (NDI)"
+    - "NDI Camara 1"
+    - "NDI Camara 2"
   quedando disponibles de inmediato para OBS, Zoom, ManyCam, Teams, etc.
 
 PASO 2:
@@ -196,7 +202,8 @@ BOTONES Y FUNCIONES PRINCIPALES:
 - BOTON VISTA ON / ECO: Permite pausar la previsualizacion en pantalla para
   reducir el uso de CPU al minimo sin interrumpir la camara virtual ni la grabacion.
 - BOTON RUEDA AJUSTES (Aspa X para guardar y salir): Configura IPs de camaras,
-  alias/nombres unicos, tasa de refresco (2/4/8 FPS) y carpeta de grabaciones.
+  alias/nombres unicos, protocolo/resolucion por camara (NDI 1080p o RTSP 720p nativo
+  para maximo ahorro de CPU y red), tasa de refresco (2/4/8 FPS) y carpeta de grabaciones.
 
 NOTAS IMPORTANTES:
 - Asegurate de que este equipo este conectado a la misma red local que las
@@ -230,18 +237,46 @@ print(f"  [OK] Paquete ZIP generado: {zip_target} ({zip_size_mb:.1f} MB)")
 # Sincronizar tambien con carpeta dist_portable
 dist_portable_dir = os.path.join(BASE_DIR, "dist_portable")
 os.makedirs(dist_portable_dir, exist_ok=True)
+
+def safe_copy_file(src_path, dst_path):
+    try:
+        shutil.copy2(src_path, dst_path)
+    except PermissionError:
+        # Si Windows tiene bloqueado el archivo por un proceso zombie previo, renombrarlo a .old desbloquea la ruta
+        old_path = dst_path + ".old"
+        try:
+            if os.path.exists(old_path):
+                try: os.remove(old_path)
+                except Exception: pass
+            os.rename(dst_path, old_path)
+            shutil.copy2(src_path, dst_path)
+            print(f"  [AVISO] Archivo bloqueado renombrado a .old y reemplazado: {os.path.basename(dst_path)}")
+        except Exception as e:
+            print(f"  [WARN] No se pudo sobrescribir {os.path.basename(dst_path)}: {e}")
+
 for item in os.listdir(dist_app_dir):
     s = os.path.join(dist_app_dir, item)
     d = os.path.join(dist_portable_dir, item)
     if os.path.isdir(s):
         if os.path.exists(d):
-            shutil.rmtree(d)
-        shutil.copytree(s, d)
+            try:
+                shutil.rmtree(d)
+                shutil.copytree(s, d)
+            except Exception:
+                # Copia recursiva archivo a archivo si la carpeta tiene algun archivo retenido
+                for sub_root, _, sub_files in os.walk(s):
+                    rel = os.path.relpath(sub_root, s)
+                    target_sub = os.path.join(d, rel)
+                    os.makedirs(target_sub, exist_ok=True)
+                    for sf in sub_files:
+                        safe_copy_file(os.path.join(sub_root, sf), os.path.join(target_sub, sf))
+        else:
+            shutil.copytree(s, d)
     else:
-        shutil.copy2(s, d)
+        safe_copy_file(s, d)
 
 zip_portable_target = os.path.join(dist_portable_dir, "NDI_Virtual_Camera_Portable.zip")
-shutil.copy2(zip_target, zip_portable_target)
+safe_copy_file(zip_target, zip_portable_target)
 print(f"  [OK] Sincronizado en dist_portable/ ({zip_portable_target})")
 
 print("\n" + "=" * 65)
