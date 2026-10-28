@@ -170,13 +170,26 @@ class SingleCameraRecorder:
         # Ensure destination directory exists
         os.makedirs(os.path.dirname(os.path.abspath(self.output_path)), exist_ok=True)
 
+        # Normalizar FPS a estándar broadcast para que el contenedor MKV tenga cadencia exacta
+        rec_fps = self.fps
+        if 23.5 <= rec_fps <= 26.5:
+            rec_fps = 25.0
+        elif 28.5 <= rec_fps <= 31.5:
+            rec_fps = 30.0
+        elif 48.0 <= rec_fps <= 52.0:
+            rec_fps = 50.0
+        elif 58.0 <= rec_fps <= 62.0:
+            rec_fps = 60.0
+        else:
+            rec_fps = round(rec_fps, 2)
+
         ffmpeg_bin = get_ffmpeg_binary()
         cmd = [
             ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
             "-f", "rawvideo", "-vcodec", "rawvideo",
             "-s", f"{self.width}x{self.height}",
             "-pix_fmt", "bgr24",
-            "-r", str(round(self.fps, 2)),
+            "-r", str(rec_fps),
             "-i", "-"
         ] + enc_args + [
             self.output_path

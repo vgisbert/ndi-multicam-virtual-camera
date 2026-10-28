@@ -11,15 +11,32 @@ import ctypes
 import threading
 import numpy as np
 import cv2
-from typing import Dict, Optional, List
+import collections
+from typing import Dict, Optional, List, Callable
 from ndi_wrapper import get_ndi, NDILIB_FRAME_TYPE_VIDEO
 from discovery import CameraDiscoveryDaemon
 from virtual_cam import VirtualCameraManager
 from recorder import MultiCameraRecordingManager
 
+def normalize_broadcast_fps(raw_fps: float) -> float:
+    """Normalizes physical frame rates to standard broadcast standards (PAL / NTSC / high rate)."""
+    if 23.0 <= raw_fps <= 27.0:
+        return 25.0
+    elif 28.0 <= raw_fps <= 32.0:
+        return 30.0
+    elif 48.0 <= raw_fps <= 52.0:
+        return 50.0
+    elif 58.0 <= raw_fps <= 62.0:
+        return 60.0
+    return round(raw_fps, 1)
+
+def is_standard_broadcast_fps(fps: float) -> bool:
+    """Returns True if the raw rate is near a known broadcast standard, ignoring socket burst drains."""
+    return (23.0 <= fps <= 27.0) or (28.0 <= fps <= 32.0) or (48.0 <= fps <= 52.0) or (58.0 <= fps <= 62.0)
+
 class CameraStreamWorker:
     """Manages an active NDI or RTSP receiver and pushes frames to Virtual Camera and Thumbnails."""
-    def __init__(self, cam_id: str, ip: str, port: int, ndi_name: str, url_address: str, alias: str, vcam: VirtualCameraManager, monitoring_enabled: bool = True, thumb_fps: float = 4.0, protocol: str = "ndi"):
+    def __init__(self, cam_id: str, ip: str, port: int, ndi_name: str, url_address: str, alias: str, vcam: VirtualCameraManager, monitoring_enabled: bool = True, thumb_fps: float = 4.0, protocol: str = "ndi", on_fps_update: Optional[Callable[[str, float, str], None]] = None):
         self.cam_id = cam_id
         self.ip = ip
         self.port = port
@@ -31,9 +48,10 @@ class CameraStreamWorker:
         self.thumb_fps = thumb_fps
         self.protocol = protocol.lower() if protocol else "ndi"
         self.recorder_manager: Optional[MultiCameraRecordingManager] = None
+        self.on_fps_update = on_fps_update
         
         self.latest_thumbnail_b64: Optional[str] = None
-        self.measured_fps = 25.0 if self.protocol == "rtsp" else 30.0
+        self.measured_fps = 0.0
         self.resolution = "1280x720" if self.protocol == "rtsp" else "1920x1080"
         
         self._receiver = None
@@ -63,13 +81,20 @@ class CameraStreamWorker:
         print(f"[OK] Canal RTSP (720p) activo para: {self.alias} ({rtsp_url})", flush=True)
         last_thumb_time = 0.0
         fps_frame_count = 0
-        fps_timer = time.time()
+        fps_timer = 0.0
+        warmup_frames = 5
 
         while self._running and self._cap and self._cap.isOpened():
             ret, bgr_img = self._cap.read()
             if not ret or bgr_img is None:
                 time.sleep(0.015)
                 continue
+
+            now = time.time()
+            if warmup_frames > 0:
+                warmup_frames -= 1
+                fps_timer = now
+                fps_frame_count = 0
 
             h, w = bgr_img.shape[:2]
             self.resolution = f"{w}x{h}"
@@ -85,7 +110,6 @@ class CameraStreamWorker:
 
             # 3. Miniatura UI
             if self.monitoring_enabled:
-                now = time.time()
                 target_delay = 1.0 / max(1.0, float(self.thumb_fps))
                 if now - last_thumb_time >= target_delay:
                     last_thumb_time = now
@@ -99,14 +123,18 @@ class CameraStreamWorker:
                     with self._lock:
                         self.latest_thumbnail_b64 = None
 
-            # Medidor de FPS en tiempo real
-            elapsed = time.time() - fps_timer
+            # Medidor de FPS continuo con ventana de 1.0s y normalización broadcast
+            elapsed = now - fps_timer
             if elapsed >= 1.0:
-                calc_fps = fps_frame_count / elapsed
-                if calc_fps > 0:
-                    self.measured_fps = round(calc_fps, 1)
+                raw_fps = fps_frame_count / elapsed
+                if raw_fps > 0:
+                    calc_fps = normalize_broadcast_fps(raw_fps)
+                    if calc_fps != self.measured_fps or self.measured_fps == 0.0:
+                        self.measured_fps = calc_fps
+                        if self.on_fps_update:
+                            self.on_fps_update(self.cam_id, self.measured_fps, self.resolution)
                 fps_frame_count = 0
-                fps_timer = time.time()
+                fps_timer = now
 
         if self._cap:
             try:
@@ -132,12 +160,19 @@ class CameraStreamWorker:
 
         last_thumb_time = 0.0
         fps_frame_count = 0
-        fps_timer = time.time()
+        fps_timer = 0.0
+        warmup_frames = 5
 
         while self._running and self._receiver:
             frame_type, video_frame = ndi.capture_frame(self._receiver, timeout_ms=35)
             if frame_type == NDILIB_FRAME_TYPE_VIDEO and video_frame:
                 try:
+                    now = time.time()
+                    if warmup_frames > 0:
+                        warmup_frames -= 1
+                        fps_timer = now
+                        fps_frame_count = 0
+
                     w = video_frame.xres
                     h = video_frame.yres
                     stride = video_frame.line_stride_in_bytes
@@ -148,10 +183,6 @@ class CameraStreamWorker:
                     
                     self.resolution = f"{w}x{h}"
                     fps_frame_count += 1
-                    if video_frame.frame_rate_D > 0 and self.measured_fps == 30.0:
-                        stream_fps = round(video_frame.frame_rate_N / video_frame.frame_rate_D, 1)
-                        if stream_fps > 0:
-                            self.measured_fps = stream_fps
 
                     # 1. Push directly to its dedicated Virtual Camera device (always operational)
                     if self.vcam:
@@ -163,7 +194,6 @@ class CameraStreamWorker:
 
                     # 3. Update UI thumbnail only if monitoring is enabled
                     if self.monitoring_enabled:
-                        now = time.time()
                         target_delay = 1.0 / max(1.0, float(self.thumb_fps))
                         if now - last_thumb_time >= target_delay:
                             last_thumb_time = now
@@ -184,14 +214,20 @@ class CameraStreamWorker:
             else:
                 time.sleep(0.010)
 
-            # FPS calculation
-            elapsed = time.time() - fps_timer
-            if elapsed >= 1.0:
-                calc_fps = fps_frame_count / elapsed
-                if calc_fps > 0:
-                    self.measured_fps = round(calc_fps, 1)
-                fps_frame_count = 0
-                fps_timer = time.time()
+            # Medidor de FPS continuo con ventana de 1.0s y normalización broadcast
+            now = time.time()
+            if fps_timer > 0.0:
+                elapsed = now - fps_timer
+                if elapsed >= 1.0:
+                    raw_fps = fps_frame_count / elapsed
+                    if raw_fps > 0:
+                        calc_fps = normalize_broadcast_fps(raw_fps)
+                        if calc_fps != self.measured_fps or self.measured_fps == 0.0:
+                            self.measured_fps = calc_fps
+                            if self.on_fps_update:
+                                self.on_fps_update(self.cam_id, self.measured_fps, self.resolution)
+                    fps_frame_count = 0
+                    fps_timer = now
 
         if self._receiver:
             ndi.destroy_receiver(self._receiver)
@@ -233,63 +269,86 @@ class VideoPipeline:
         self._coordinator_thread.start()
         print("[OK] Pipeline multicamara simultaneo iniciado.")
 
+    def _on_worker_fps_update(self, cam_id: str, fps: float, resolution: str):
+        """Callback invoked immediately when a worker measures physical incoming FPS."""
+        cam_model = self.discovery.get_camera(cam_id)
+        if cam_model:
+            cam_model.fps = fps
+            if resolution:
+                cam_model.resolution = resolution
+        if self.vcam:
+            self.vcam.update_device_fps(cam_id, fps)
+
     def _coordinator_loop(self):
         """Monitors cameras and ensures active stream workers for all online cameras."""
         while self._running:
-            all_cams = self.discovery.get_all_cameras()
-            active_ids = set()
-            protocols_cfg = self.discovery.config.get("camera_protocols", {})
+            try:
+                all_cams = self.discovery.get_all_cameras()
+                active_ids = set()
+                protocols_cfg = self.discovery.config.get("camera_protocols", {})
 
-            for cam in all_cams:
-                c_id = cam["cam_id"]
-                is_online = cam["is_online"]
-                url = cam["url_address"]
-                alias = cam.get("alias", f"Camara {cam['ip']}")
-                cam_ip = cam["ip"]
-                desired_proto = (protocols_cfg.get(c_id) or protocols_cfg.get(cam_ip) or cam.get("protocol") or "ndi").lower()
+                # Ensure virtual camera bridge is operational whenever cameras are online
+                online_cams = [c for c in all_cams if c.get("is_online")]
+                if online_cams and self.vcam and not self.vcam.is_active:
+                    self.vcam.start_all(online_cams)
 
-                if is_online and url:
-                    active_ids.add(c_id)
-                    # Create or keep worker alive
-                    worker = self.workers.get(c_id)
-                    if not worker or worker.url_address != url or getattr(worker, "protocol", "ndi") != desired_proto:
-                        if worker:
-                            worker.stop()
-                        new_worker = CameraStreamWorker(
-                            cam_id=c_id,
-                            ip=cam_ip,
-                            port=cam["port"],
-                            ndi_name=cam["ndi_name"],
-                            url_address=url,
-                            alias=alias,
-                            vcam=self.vcam,
-                            monitoring_enabled=(self.monitoring_enabled and self.window_visible),
-                            thumb_fps=self.preview_fps,
-                            protocol=desired_proto
-                        )
-                        new_worker.recorder_manager = self.recorder_manager
-                        new_worker.start()
-                        worker = new_worker
-                        self.workers[c_id] = new_worker
-                    else:
-                        worker.alias = alias
-                        worker.monitoring_enabled = (self.monitoring_enabled and self.window_visible)
-                        worker.thumb_fps = self.preview_fps
-                        worker.recorder_manager = self.recorder_manager
+                for cam in all_cams:
+                    c_id = cam["cam_id"]
+                    is_online = cam["is_online"]
+                    url = cam["url_address"]
+                    alias = cam.get("alias", f"Camara {cam['ip']}")
+                    cam_ip = cam["ip"]
+                    desired_proto = (protocols_cfg.get(c_id) or protocols_cfg.get(cam_ip) or cam.get("protocol") or "ndi").lower()
 
-                    # Always sync alias, live FPS, resolution, and protocol
-                    cam_model = self.discovery.get_camera(c_id)
-                    if cam_model and worker:
-                        if worker.measured_fps > 0:
-                            cam_model.fps = worker.measured_fps
-                        cam_model.resolution = worker.resolution
-                        cam_model.protocol = worker.protocol
+                    if is_online and url:
+                        active_ids.add(c_id)
+                        # Create or keep worker alive
+                        worker = self.workers.get(c_id)
+                        if not worker or worker.url_address != url or getattr(worker, "protocol", "ndi") != desired_proto:
+                            if worker:
+                                worker.stop()
+                            new_worker = CameraStreamWorker(
+                                cam_id=c_id,
+                                ip=cam_ip,
+                                port=cam["port"],
+                                ndi_name=cam["ndi_name"],
+                                url_address=url,
+                                alias=alias,
+                                vcam=self.vcam,
+                                monitoring_enabled=(self.monitoring_enabled and self.window_visible),
+                                thumb_fps=self.preview_fps,
+                                protocol=desired_proto,
+                                on_fps_update=self._on_worker_fps_update
+                            )
+                            new_worker.recorder_manager = self.recorder_manager
+                            new_worker.start()
+                            worker = new_worker
+                            self.workers[c_id] = new_worker
+                        else:
+                            worker.alias = alias
+                            worker.monitoring_enabled = (self.monitoring_enabled and self.window_visible)
+                            worker.thumb_fps = self.preview_fps
+                            worker.recorder_manager = self.recorder_manager
+                            worker.on_fps_update = self._on_worker_fps_update
 
-            # Cleanup workers for cameras that went offline
-            for dead_id in list(self.workers.keys()):
-                if dead_id not in active_ids:
-                    self.workers[dead_id].stop()
-                    del self.workers[dead_id]
+                        # Always sync alias, live FPS, resolution, and protocol
+                        cam_model = self.discovery.get_camera(c_id)
+                        if cam_model and worker:
+                            if worker.measured_fps > 0:
+                                cam_model.fps = worker.measured_fps
+                                if self.vcam:
+                                    self.vcam.update_device_fps(c_id, worker.measured_fps)
+                            cam_model.resolution = worker.resolution
+                            cam_model.protocol = worker.protocol
+
+                # Cleanup workers for cameras that went offline
+                for dead_id in list(self.workers.keys()):
+                    if dead_id not in active_ids:
+                        self.workers[dead_id].stop()
+                        del self.workers[dead_id]
+
+            except Exception as e:
+                print(f"[WARN] Error en ciclo coordinador de video: {e}", flush=True)
 
             time.sleep(0.8)
 

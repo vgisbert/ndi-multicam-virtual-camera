@@ -3,12 +3,12 @@
   "virtual_camera_name": "NDI Virtual Camera",
   "selected_source": "",
   "auto_start_virtual_cam": true,
-  "preview_fps": 2,
+  "preview_fps": 4,
   "recording_dir": "",
   "resolution": {
     "width": 1920,
     "height": 1080,
-    "fps": 30
+    "fps": 25
   },
   "camera_aliases": {
     "192.168.9.108:5961": "Cám 1",
@@ -25,17 +25,15 @@
   },
   "camera_protocols": {
     "192.168.9.108": "ndi",
-    "192.168.9.171": "rtsp",
+    "192.168.9.171": "ndi",
     "192.168.9.108:5961": "ndi",
     "cam-0200c0a8096c": "ndi",
-    "192.168.9.171:5961": "rtsp",
-    "cam-0200c0a809ab": "rtsp"
+    "192.168.9.171:5961": "ndi",
+    "cam-0200c0a809ab": "ndi",
+    "cam-986ee85f3690": "ndi"
   },
   "network": {
     "preferred_nic": "",
-    "ndi_extra_ips": [
-      "192.168.9.108",
-      "192.168.9.171"
-    ]
+    "ndi_extra_ips": []
   }
 }

@@ -52,7 +52,7 @@ def probe_tcp_port(ip_str: str, port: int = 5961, timeout_s: float = 0.4) -> Opt
     return None
 
 class CameraModel:
-    def __init__(self, cam_id: str, ip: str, port: int, mac: str, ndi_name: str, url_address: str, alias: str, protocol: str = "ndi"):
+    def __init__(self, cam_id: str, ip: str, port: int, mac: str, ndi_name: str, url_address: str, alias: str, protocol: str = "ndi", fps: float = 25.0):
         self.cam_id = cam_id
         self.ip = ip
         self.port = port
@@ -63,8 +63,8 @@ class CameraModel:
         self.protocol = protocol.lower() if protocol else "ndi"
         self.is_online = False
         self.latency_ms = 0.0
-        self.fps = 30.0
-        self.resolution = "1920x1080"
+        self.fps = fps
+        self.resolution = "1280x720" if self.protocol == "rtsp" else "1920x1080"
         self.last_seen = 0.0
         self.is_pgm = False
 
@@ -80,7 +80,7 @@ class CameraModel:
             "protocol": self.protocol,
             "is_online": self.is_online,
             "latency_ms": round(self.latency_ms, 1),
-            "fps": round(self.fps, 1),
+            "fps": round(self.fps, 1) if (self.is_online and self.fps > 0) else 0.0,
             "resolution": self.resolution,
             "is_pgm": self.is_pgm
         }
@@ -100,7 +100,7 @@ class CameraDiscoveryDaemon:
             return
         self._running = True
 
-        extra_ips = self.config.get("network", {}).get("ndi_extra_ips", ["192.168.9.108", "192.168.9.171"])
+        extra_ips = self.config.get("network", {}).get("ndi_extra_ips", [])
         
         # Pre-seed configured cameras so they appear in UI even before NDI responds
         aliases = self.config.get("camera_aliases", {})
@@ -202,6 +202,7 @@ class CameraDiscoveryDaemon:
                             cfg_proto = protocols.get(url_addr) or protocols.get(ip_part) or protocols.get(target_cam.cam_id)
                             if cfg_proto:
                                 target_cam.protocol = cfg_proto.lower()
+                                target_cam.resolution = "1280x720" if target_cam.protocol == "rtsp" else "1920x1080"
 
                     # 3. Health check all cameras (latency probe)
                     now = time.time()

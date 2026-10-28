@@ -74,6 +74,18 @@
     </div>
 
     <div class="flex items-center gap-1">
+      <!-- BOTÓN GRABACIÓN (REC MKV) -->
+      <button id="btn-record" onclick="toggleRecording()" class="px-2 py-0.5 rounded bg-surface-high hover:bg-surface-highest text-red-tac font-bold text-[9.5px] border border-red-tac/40 flex items-center gap-1 transition-all cursor-pointer" data-i18n-title="btn_rec_title" title="Grabar cámaras en formato MKV">
+        <span id="btn-record-dot" class="w-2 h-2 rounded-full bg-red-tac shadow-[0_0_6px_#ff1744]"></span>
+        <span id="btn-record-text" class="tracking-wider">REC</span>
+      </button>
+
+      <!-- BOTÓN MONITORIZACIÓN (ON / OFF - MODO RENDIMIENTO) -->
+      <button id="btn-monitor" onclick="toggleMonitoring()" class="px-1.5 py-0.5 rounded bg-surface-high hover:bg-surface-highest text-cyan-tac font-bold text-[9.5px] border border-border-tac/40 flex items-center gap-1 transition-colors cursor-pointer" data-i18n-title="btn_monitor_title" title="Conmutar monitorización (Modo Rendimiento / Ahorro CPU)">
+        <span id="btn-monitor-icon" class="material-symbols-outlined text-[13px]">visibility</span>
+        <span id="btn-monitor-text" class="tracking-wider">VISTA ON</span>
+      </button>
+
       <!-- BOTÓN IDIOMA (SP / EN) -->
       <button id="btn-lang" onclick="cycleLanguage()" class="px-1.5 py-0.5 rounded bg-surface-high hover:bg-surface-highest text-cyan-tac font-bold text-[10px] border border-border-tac/40 transition-colors cursor-pointer" data-i18n-title="btn_lang_title" title="Cambiar idioma">
         SP
@@ -104,38 +116,52 @@
   </main>
 
   <!-- ================= MODAL DE CONFIGURACIÓN ================= -->
-  <div id="modal-settings" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-3">
-    <div class="bg-surface-low border border-border-tac rounded-lg w-full max-w-[340px] flex flex-col gap-3 p-3 shadow-2xl">
-      <div class="flex items-center justify-between border-b border-border-tac/40 pb-1.5">
-        <span class="font-sans font-bold text-[11px] text-cyan-tac uppercase tracking-wider" data-i18n="settings_title">CONFIGURACIÓN</span>
-        <button onclick="closeSettings()" class="text-txt-muted hover:text-txt-main">
+  <div id="modal-settings" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-2">
+    <div class="bg-surface-low border border-border-tac rounded-lg w-full max-w-[390px] max-h-[calc(100vh-16px)] flex flex-col p-2.5 shadow-2xl overflow-hidden">
+      <!-- CABECERA DEL MODAL (CON ASPA X PARA GUARDAR Y CERRAR) -->
+      <div class="flex items-center justify-between border-b border-border-tac/40 pb-1.5 mb-1">
+        <div class="flex items-center gap-1.5">
+          <span class="material-symbols-outlined text-[14px] text-cyan-tac">tune</span>
+          <span class="font-sans font-bold text-[11px] text-cyan-tac uppercase tracking-wider" data-i18n="settings_title">CONFIGURACIÓN</span>
+        </div>
+        <button onclick="saveAndCloseSettings()" class="w-5 h-5 rounded flex items-center justify-center text-txt-muted hover:text-white hover:bg-surface-high transition-colors cursor-pointer" title="Guardar cambios y cerrar" data-i18n-title="settings_close_title">
           <span class="material-symbols-outlined text-[16px]">close</span>
         </button>
       </div>
 
-      <div class="flex flex-col gap-2.5 text-[10px] max-h-[300px] overflow-y-auto pr-1">
-        <div class="flex flex-col gap-1">
-          <label class="text-txt-muted uppercase font-bold" data-i18n="settings_vcam_name">Nombre de Cámara Virtual</label>
-          <input id="cfg-vcam-name" type="text" class="bg-surface-lowest border border-border-tac rounded px-2 py-1 text-txt-main outline-none focus:border-cyan-tac">
+      <div class="flex flex-col gap-2 text-[9.5px] overflow-y-auto pr-1 pb-3 flex-1">
+        <div class="flex flex-col gap-0.5">
+          <label class="text-txt-muted uppercase font-bold" data-i18n="settings_preview_fps">Tasa de Refresco de Miniatura</label>
+          <select id="cfg-preview-fps" class="bg-surface-lowest border border-border-tac rounded px-2 py-0.5 text-txt-main outline-none focus:border-cyan-tac text-[9.5px]">
+            <option value="2" data-i18n="fps_opt_2">2 FPS (Modo Eco / Mínimo consumo CPU)</option>
+            <option value="4" data-i18n="fps_opt_4">4 FPS (Equilibrado - Recomendado)</option>
+            <option value="8" data-i18n="fps_opt_8">8 FPS (Fluido - Operador Joystick)</option>
+          </select>
         </div>
 
-        <div class="flex flex-col gap-1">
-          <label class="text-txt-muted uppercase font-bold" data-i18n="settings_extra_ips_title">IPs Adicionales NDI</label>
-          <input id="cfg-extra-ips" type="text" placeholder="192.168.9.108, 192.168.9.171" class="bg-surface-lowest border border-border-tac rounded px-2 py-1 text-txt-main outline-none focus:border-cyan-tac">
-          <span class="text-[8.5px] text-txt-muted/70" data-i18n="settings_extra_ips_hint">Separadas por comas (ej. 192.168.9.108, 192.168.9.171)</span>
+        <!-- DESTINO DE GRABACIÓN MKV -->
+        <div class="flex flex-col gap-0.5">
+          <label class="text-txt-muted uppercase font-bold" data-i18n="settings_recording_dir">Carpeta de Grabaciones (MKV)</label>
+          <div class="flex items-center gap-1.5">
+            <input id="cfg-recording-dir" type="text" placeholder="grabaciones (Carpeta del programa)" class="bg-surface-lowest border border-border-tac rounded px-2 py-0.5 text-txt-main outline-none focus:border-cyan-tac text-[9.5px] flex-1">
+            <button type="button" onclick="browseRecordingDir()" id="btn-browse-dir" class="px-1.5 py-0.5 bg-surface-high hover:bg-surface-highest text-cyan-tac border border-border-tac rounded flex items-center justify-center cursor-pointer transition-colors" title="Examinar carpeta de grabaciones..." data-i18n-title="settings_browse_title">
+              <span class="material-symbols-outlined text-[15px]">folder_open</span>
+            </button>
+          </div>
+          <span class="text-[8px] text-txt-muted/70" data-i18n="settings_recording_dir_hint">Formato: &lt;fecha&gt;_&lt;hora&gt;_&lt;id_cámara&gt;.mkv. Vacío = subcarpeta 'grabaciones'</span>
         </div>
 
-        <div class="flex flex-col gap-1">
+        <div class="flex flex-col gap-0.5">
           <label class="text-txt-muted uppercase font-bold" data-i18n="settings_aliases_title">Alias de Cámaras</label>
           <div id="cfg-aliases-container" class="flex flex-col gap-1.5">
             <!-- Rellenado dinámicamente -->
           </div>
+          <!-- MENSAJE DE ERROR POR NOMBRES DUPLICADOS -->
+          <div id="cfg-aliases-error" class="hidden text-red-tac font-bold text-[8.5px] mt-1 flex items-center gap-1 bg-red-dim/40 border border-red-tac/50 rounded px-1.5 py-0.5">
+            <span class="material-symbols-outlined text-[12px] text-red-tac">error</span>
+            <span id="cfg-aliases-error-text" data-i18n="settings_duplicate_alias_error">Error: Las cámaras deben tener nombres diferentes para evitar confusiones y colisiones.</span>
+          </div>
         </div>
-      </div>
-
-      <div class="flex items-center justify-end gap-2 border-t border-border-tac/40 pt-2">
-        <button onclick="closeSettings()" class="px-2.5 py-1 rounded bg-surface-high hover:bg-surface-highest text-txt-muted font-bold text-[10px]" data-i18n="settings_btn_close">CANCELAR</button>
-        <button onclick="saveSettings()" class="px-3 py-1 rounded bg-cyan-tac text-surface-lowest font-bold text-[10px] hover:brightness-110" data-i18n="settings_btn_save">GUARDAR</button>
       </div>
     </div>
   </div>

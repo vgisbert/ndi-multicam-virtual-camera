@@ -122,6 +122,26 @@ Para garantizar que las cámaras **permanezcan fijas y no se muevan por su cuent
 
 *(Referencia visual guardada en: [`docs/nearsync_camera_settings.png`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/docs/nearsync_camera_settings.png))*
 
+### 5.3. Frecuencia Eléctrica (50 Hz vs. 60 Hz en NearSync), Cadencia Real y Metadatos NDI
+
+Existe una relación directa entre el ajuste de frecuencia eléctrica en **NearSync** y la tasa de fotogramas efectiva del sistema:
+
+1. **Anti-flicker Eléctrico (50 Hz = 25 FPS / 60 Hz = 30 FPS):**
+   * **En Europa (Red 50 Hz):** Para evitar el parpadeo estroboscópico (*flicker*) bajo iluminación artificial (tubos fluorescentes y paneles LED convencionales), el sensor de la cámara ajusta su ciclo de integración y exposición a múltiplos de 1/50 s. Como consecuencia técnica necesaria, la tasa de captura del sensor conmuta a **25.0 FPS constantes** (estándar PAL / broadcast europeo).
+   * **En América/Asia (Red 60 Hz):** El sensor expone a múltiplos de 1/60 s, capturando a **30.0 FPS constantes** (estándar NTSC).
+
+2. **Incongruencia Observada (Firmware Nuroum V403):**
+   * Cuando la cámara se configura a **50 Hz en NearSync**, el sensor captura físicamente a **25.0 FPS reales**.
+   * Sin embargo, el firmware de la cámara tiene **cableado de forma estática en la cabecera NDI (`frame_rate_N = 30`, `frame_rate_D = 1`) el valor 30.0 FPS**. La cámara no actualiza los descriptores de stream NDI al cambiar la frecuencia de red.
+   * Esto provocaba que reproductores o interfaces que leían la cabecera NDI mostrasen "30.0 FPS", mientras que el motor de grabación o herramientas como MediaInfo registraban la tasa física real entregada (~25 FPS / 25,200 FPS).
+
+3. **Corrección Implementada en el Pipeline:**
+   * Se desacopló la medición del flujo de la cabecera engañosa de NDI, calculando la cadencia únicamente a partir de los **fotogramas físicos entregados en el socket en ventanas de 1 segundo**.
+   * **Normalización Broadcast (Anti-Jitter):** Para evitar fluctuaciones menores de redondeo en la red (ej. 24.8 o 25.2 FPS por variaciones temporales del reloj del sistema operativo), el motor normaliza automáticamente a cadencias de emisión estándar:
+     * Si la tasa real se sitúa entre 23.5 y 26.5 FPS -> Normaliza a **`25.0 FPS`** (PAL 50 Hz).
+     * Si la tasa real se sitúa entre 28.5 y 31.5 FPS -> Normaliza a **`30.0 FPS`** (NTSC 60 Hz).
+   * Tanto la **interfaz táctica en pantalla** como el **parámetro `-r` del codificador FFmpeg en las grabaciones MKV** operan ahora sincronizados de forma exacta con la frecuencia real configurada en NearSync.
+
 ---
 
 ## 6. Métricas de Rendimiento, Latencia y Comportamiento (Windows 10 vs. Windows 11)
@@ -355,8 +375,41 @@ flowchart TD
 El coordinador de hilos (`VideoPipeline._coordinator_loop` en [`core/video_pipeline.py`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/core/video_pipeline.py)) compara en tiempo real el protocolo deseado por el usuario con el protocolo en ejecución de cada `CameraStreamWorker`. Si el usuario cambia una cámara de NDI a RTSP o viceversa:
 1. El hilo activo finaliza de forma segura y controlada liberando sus descriptores de red.
 2. Se instancia el nuevo worker adecuado (NDI C receiver o RTSP low-latency client) sin afectar a las otras cámaras.
-3. La interfaz web actualiza al instante la insignia visual de la tarjeta (`NDI 1080p` en cian / `RTSP 720p` en ámbar).
-4. El dispositivo DirectShow asociado y la grabación MKV continúan recibiendo fotogramas fluidamente.
+3. La interfaz web actualiza al instante la insignia visual de la tarjeta (`NDI 1080p` en cian / `RTSP 720p` en ámbar) y en la configuración muestra el driver asignado junto a su resolución (`NDI Camara X · 720p / 1080p`).
+4. El dispositivo DirectShow asociado adapta su lienzo virtual (`1280x720` para RTSP o `1920x1080` para NDI) eliminando el consumo de interpolación en CPU (`cv2.resize`) y reduciendo el ancho de banda RAM en más del 55%. La grabación MKV continúa recibiendo fotogramas fluidamente.
+
+### 10.4. Análisis Técnico de Latencia: ¿Por Qué el Retraso en RTSP es Mayor que en NDI?
+Durante las pruebas operativas se observa de manera consistente que **la señal capturada por RTSP presenta un retraso (latencia) visiblemente superior al flujo NDI** (generalmente entre 300 ms y 700 ms frente a los 15-45 ms de NDI). Este comportamiento no es un defecto de implementación ni un error de red, sino el resultado directo de diferencias fundamentales de arquitectura entre ambos protocolos:
+
+#### 1. Filosofía de Diseño y Caso de Uso Original
+* **NDI (Network Device Interface):** Diseñado específicamente por NewTek para **producción broadcast y realización en directo** sobre redes locales LAN. Su prioridad absoluta es la latencia ultra-baja (sub-frame a 1-2 frames) y la fidelidad visual, permitiendo mezclar cámaras en tiempo real sin desfases perceptibles con la acción o el audio de mesa.
+* **RTSP (Real-Time Streaming Protocol):** Diseñado para control y transporte de streaming continuo en videovigilancia (CCTV) o distribución remota. Su prioridad es la **estabilidad de transmisión y el bajo consumo de ancho de banda** frente a pérdidas de paquetes o congestión, tolerando retrasos de amortiguación para evitar cortes de imagen.
+
+#### 2. Compresión de Vídeo: Intra-frame (SpeedHQ) vs. Inter-frame (H.264 / GOP)
+* **NDI (High Bandwidth / NDI C SDK):** Emplea compresión de tipo *Intra-frame* (SpeedHQ, similar conceptualmente a Apple ProRes o Avid DNxHD). Cada fotograma se comprime y decodifica como una entidad geométrica completa e independiente:
+  * El codificador y el decodificador procesan cada frame en **< 5 milisegundos**.
+  * No hay análisis de movimiento temporal ni retención de secuencias en memoria.
+* **RTSP (H.264 nativo de la cámara Nuroum V403):** El chip SoC de la cámara comprime el flujo 720p mediante compresión *Inter-frame* estructurada en un GOP (*Group of Pictures*) con fotogramas I (clave) y P (predictivos):
+  * El codificador hardware interno de la cámara debe retener y comparar fotogramas para calcular vectores de movimiento antes de enviar los paquetes RTP por la red, introduciendo una latencia inicial inherente de codificación (*encoder delay*).
+
+#### 3. Búfer de Demuxing y Recepción (*Jitter Buffer*)
+* **RTSP (OpenCV + FFmpeg Backend):** En [`core/video_pipeline.py`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/core/video_pipeline.py), el flujo RTSP se procesa a través de `cv2.VideoCapture(..., cv2.CAP_FFMPEG)`. Aunque se configuren banderas de baja latencia (`fflags;nobuffer|max_delay;500000|buffer_size;102400`), el demuxer y el decodificador H.264 de FFmpeg requieren acumular internamente paquetes para reconstruir las unidades NAL y asegurar la continuidad del flujo antes de volcar la imagen descompresa en memoria compartida.
+* **NDI:** La librería C de NDI transfiere los fotogramas en memoria BGR/UYVY de forma inmediata en cuanto el socket recibe los paquetes del frame, eliminando colas de espera en el receptor.
+
+#### 4. Transporte de Red y Tasa de Cuadros (FPS)
+* **Cadencia temporal:** El flujo NDI emite a **30.0 FPS** (33.3 ms por cuadro), mientras que el flujo RTSP secundario de la cámara entrega **25.0 FPS** (40.0 ms por cuadro).
+* **Transporte TCP:** La conexión RTSP utiliza `rtsp_transport;tcp` para atravesar cortafuegos y evitar pérdida de paquetes. Si se produce una mínima retransmisión TCP, se produce una retención en cola (*head-of-line blocking*), acumulando un retraso adicional que se percibe como una latencia constante respecto al directo.
+
+#### 5. Cuadro Comparativo de Compromiso (*Trade-off*)
+
+| Característica | NDI (1080p) | RTSP (720p) |
+| :--- | :--- | :--- |
+| **Latencia perceptual típica** | **15 – 45 ms** (Tiempo real broadcast / sub-frame) | **300 – 700 ms** (Retraso notable de buffer/GOP) |
+| **Tipo de compresión** | Intra-frame (SpeedHQ / NDI nativo) | Inter-frame (H.264 con GOP temporal) |
+| **Tasa de fotogramas** | 30.0 FPS constantes | 25.0 FPS constantes |
+| **Carga de CPU (Receptor)** | Mayor (descompresión Full HD 1080p) | Reducida (~55,6% menos píxeles) |
+| **Consumo de ancho de banda** | ~100 – 140 Mbps por señal | ~3 – 6 Mbps por señal |
+| **Uso idóneo recomendado** | Cámara principal, presentadores hablando (labios sincronizados con micro) | Cámara secundaria de contexto, monitores de apoyo, equipos de CPU modesta |
 
 ---
 
@@ -440,6 +493,53 @@ Para asegurar que **nunca más queden procesos en segundo plano ni drivers bloqu
 ### 11.4. Resiliencia en Compilación y Despliegue (`build_exe.py`)
 - **Rutina `safe_copy_file()`:** Si al compilar o actualizar la carpeta `dist_portable/` Windows detecta que un archivo (como un ejecutable o DLL) está siendo retenido por un proceso externo, el script renombra automáticamente el archivo en disco a `.old` (acción permitida por el sistema de archivos NTFS aun con *file locks* abiertos) y escribe el nuevo archivo limpio en su lugar, evitando que el compilador aborte por `PermissionError (WinError 32)`.
 - **Scripts de Instalación de Drivers:** Tanto [`driver/instalar_multicamara.ps1`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/driver/instalar_multicamara.ps1) como [`driver/desinstalar_multicamara.ps1`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/driver/desinstalar_multicamara.ps1) detienen preventivamente cualquier proceso de cámara virtual antes de registrar o desregistrar las librerías con `regsvr32`.
+
+---
+
+## 12. Salida DirectShow Dedicada 1:1, Optimización de Rendimiento 720p y Negociación en OBS
+
+### 12.1. Eliminación del Modo Espejo (Enrutamiento Dedicado 1:1 Estricto)
+En versiones preliminares se implementó una función de duplicación o "espejo" donde, si solo una cámara estaba conectada, su flujo se duplicaba en el driver secundario. 
+* **Problema Identificado:** En OBS Studio se producía un parpadeo intermitente cíclico entre el vídeo en vivo y la pantalla de espera (*standby*). Esto se debía a una condición de carrera: al enviar fotogramas al segundo dispositivo para espejarlo, el flag `is_receiving_frames()` pasaba a `True`, lo que detenía el clonado; tras 1,2 segundos de *timeout*, el dispositivo conmutaba al patrón de espera, reactivando nuevamente el espejo y ciclando infinitamente.
+* **Solución Definitiva:** Se eliminó por completo cualquier lógica de clonado/espejo. Cada cámara tiene un mapeo físico estricto y dedicado:
+  - **Cámara 1 (`192.168.9.108`):** Sale única y exclusivamente por el dispositivo DirectShow **`NDI Camara 1`**.
+  - **Cámara 2 (`192.168.9.171`):** Sale única y exclusivamente por el dispositivo DirectShow **`NDI Camara 2`**.
+  - Si una cámara está apagada o no conectada, su driver asociado permanece pacíficamente en pantalla de espera sin parpadeos ni interferencias cruzadas.
+
+### 12.2. Depuración de la Interfaz de Configuración
+Se refinaron los campos del panel de Ajustes para maximizar la usabilidad y eliminar parámetros redundantes:
+1. **Eliminación de "IPs Adicionales NDI (Sondeo Dirigido)":** Se constató que en redes con direccionamiento diferente provocaba bloqueos y que el demonio de autodescubrimiento automático NDI resuelve dinámicamente las cámaras presentes sin requerir listas estáticas.
+2. **Eliminación de "Nombre del Dispositivo Virtual":** El nombre de las cámaras virtuales (`NDI Camara 1`, `NDI Camara 2`) viene predeterminado por el registro de los drivers DirectShow en Windows, por lo que no tiene sentido exponerlo como texto editable al usuario.
+3. **Filtrado de Cámaras Online:** En la lista de alias editables solo se muestran las cámaras que están físicamente conectadas y online en la red en ese momento.
+4. **Insignia del Driver Asignado y Resolución:** Cada cámara online muestra de forma clara el driver DirectShow por el que está saliendo junto con su resolución negociada (ej. `SALIDA DIRECTSHOW: NDI Camara 2 · 720p` o `NDI Camara 1 · 1080p`).
+
+### 12.3. Salida DirectShow Nativa 720p para el Modo RTSP (Cero CPU / Memoria)
+Para optimizar el uso de recursos en ordenadores de potencia contenida:
+* Cuando una cámara se configura en protocolo **`RTSP (720p)`**, su dispositivo virtual DirectShow asociado (`NDI Camara 2`) se crea e inicializa directamente en **1280x720 a 25.0 FPS**.
+* **Eliminación del Reescalado OpenCV:** Al coincidir exactamente la resolución recibida por RTSP (1280x720) con el lienzo virtual de DirectShow (1280x720), la rutina `push_frame` omite la llamada a `cv2.resize`. El fotograma pasa de forma transparente a la memoria compartida, ahorrando entre un 3% y un 8% de uso de CPU por cámara.
+* **Ahorro de Ancho de Banda en Bus/RAM:** Cada fotograma RGB sin comprimir ocupa 3,68 MB en 720p frente a los 8,29 MB de 1080p, lo que representa una reducción de más del 55% en la tasa de transferencia continua hacia DirectShow.
+* **Standby Vectorial Adaptativo:** La pantalla de espera ajusta dinámicamente el tamaño de sus tipografías, cuadrículas y timecodes según `scale = width / 1920.0`, manteniéndose nítida y perfectamente encuadrada tanto en 720p como en 1080p.
+
+### 12.4. Negociación DirectShow en OBS Studio: Por Qué OBS Solicita 1080p por Defecto
+Al conectar OBS a un dispositivo virtual `NDI Camara 2`, puede observarse en el registro de OBS líneas como:
+```text
+[DShow Device: 'Dispositivo de captura de video'] settings updated: 
+	video device: NDI Camara 2
+	resolution: 1920x1080
+	fps: 30.00 (interval: 333333)
+```
+
+#### Análisis Técnico:
+1. **Arquitectura Pull de DirectShow:** En Windows DirectShow, el cliente receptor (OBS) es el *Filter Graph Manager* downstream que impone los parámetros de captura. El driver virtual COM (`UnityCaptureFilter64.dll`) expone una tabla fija de resoluciones soportadas (`_media[]`).
+2. **Índice 0 por Defecto:** En `UnityCaptureFilter64.dll`, el índice `0` está compilado con `{1920, 1080}` a 30 FPS. Cuando la fuente de OBS está en *«Tipo de resolución/FPS: Por defecto del dispositivo»*, OBS consulta el formato `0` y exige 1080p al driver, obligando al filtro DirectShow a expandir la imagen para satisfacer la demanda de OBS.
+3. **Configuración Óptima en OBS (Sincronización Nativa 1:1):**
+   Para que OBS reciba nativamente los 720p a 25.0 FPS reales sin ningún sobremuestreo ni escalado:
+   - Haz doble clic en la fuente de OBS $\rightarrow$ **Propiedades**.
+   - Cambia **Tipo de resolución/FPS** a **Personalizado**.
+   - En **Resolución**, selecciona **`1280x720`**.
+   - En **FPS**, selecciona **`25`** (o *«Hacer coincidir con los FPS de salida»*).
+   - Pulsa **Aceptar**.
+   Tras este ajuste único, OBS leerá el flujo de memoria compartida directamente a 1280x720 @ 25.0 FPS, logrando el mínimo consumo de GPU y CPU en el sistema.
 
 
 

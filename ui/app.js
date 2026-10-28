@@ -243,9 +243,13 @@ function renderCameras(cameras) {
     return;
   }
 
-  // Preserve existing cards to avoid UI flicker, update contents or rebuild if length changed
+  // Preserve existing cards to avoid UI flicker, update contents or rebuild if length or sources changed
   let existingCards = container.querySelectorAll(".camera-card");
-  if (existingCards.length !== displayCameras.length) {
+  const existingIps = Array.from(existingCards).map(c => c.dataset.ip || c.id);
+  const targetIps = displayCameras.map(c => c.ip || c.cam_id);
+  const match = (existingIps.length === targetIps.length) && existingIps.every((ip, idx) => ip === targetIps[idx]);
+
+  if (!match) {
     container.innerHTML = "";
     displayCameras.forEach(cam => {
       const card = createCameraCardElement(cam);
@@ -261,6 +265,8 @@ function renderCameras(cameras) {
 function createCameraCardElement(cam) {
   const card = document.createElement("div");
   card.id = `card-${cam.cam_id}`;
+  card.dataset.camId = cam.cam_id;
+  card.dataset.ip = cam.ip;
   card.className = "camera-card rounded border p-1.5 flex flex-col gap-1 cursor-pointer transition-all";
   card.onclick = () => selectPgm(cam.cam_id);
 
@@ -331,8 +337,15 @@ function createCameraCardElement(cam) {
 }
 
 function updateCameraCardElement(cam) {
-  const card = document.getElementById(`card-${cam.cam_id}`);
+  const container = document.getElementById("cameras-container");
+  const card = document.getElementById(`card-${cam.cam_id}`) ||
+               (container ? container.querySelector(`.camera-card[data-ip="${cam.ip}"]`) : null);
   if (card) {
+    if (card.id !== `card-${cam.cam_id}`) {
+      card.id = `card-${cam.cam_id}`;
+    }
+    card.dataset.camId = cam.cam_id;
+    card.dataset.ip = cam.ip;
     applyCardData(card, cam);
   }
 }
@@ -393,7 +406,7 @@ function applyCardData(card, cam) {
   // Multicamera Tally & card border styling
   const vcamActive = currentStatus.vcam && currentStatus.vcam.is_active;
 
-  const displayFps = (cam.fps && cam.fps > 0) ? `${cam.fps.toFixed(1)} FPS` : (cam.is_online ? "30.0 FPS" : "--");
+  const displayFps = (cam.fps && cam.fps > 0) ? `${cam.fps.toFixed(1)} FPS` : "--";
 
   if (vcamActive && cam.is_online) {
     // When virtual cameras are running and camera is online: LIVE ON AIR!
@@ -607,9 +620,6 @@ function openSettings() {
 
   // Populate fields
   fetch("/api/config").then(r => r.json()).then(cfg => {
-    document.getElementById("cfg-vcam-name").value = cfg.virtual_camera_name || "NDI Virtual Camera";
-    const extraIps = (cfg.network && cfg.network.ndi_extra_ips) ? cfg.network.ndi_extra_ips.join(", ") : "";
-    document.getElementById("cfg-extra-ips").value = extraIps;
     if (document.getElementById("cfg-preview-fps")) {
       document.getElementById("cfg-preview-fps").value = String(cfg.preview_fps || 4);
     }
@@ -622,33 +632,69 @@ function openSettings() {
     const errBox = document.getElementById("cfg-aliases-error");
     if (errBox) errBox.classList.add("hidden");
 
-    currentCameras.forEach(cam => {
-      const row = document.createElement("div");
-      row.className = "flex items-center gap-1.5 bg-surface-lowest/40 p-1.5 rounded border border-border-tac/30";
-      const displayVal = getLocalizedAlias(cam);
-      const isRtsp = (cam.protocol === "rtsp");
-      row.innerHTML = `
-        <div class="flex flex-col flex-1 gap-0.5 min-w-0">
-          <span class="text-[8.5px] font-mono text-txt-muted font-bold truncate">${cam.ip}</span>
-          <input type="text" data-cam-id="${cam.cam_id}" value="${displayVal}" placeholder="Alias..." class="alias-input bg-surface-lowest border border-border-tac rounded px-1.5 py-0.5 text-txt-main text-[9.5px] outline-none focus:border-cyan-tac transition-colors">
-        </div>
-        <div class="flex flex-col gap-0.5 w-[115px] shrink-0">
-          <span class="text-[8px] text-txt-muted uppercase font-bold" data-i18n="settings_protocol_title">${t("settings_protocol_title")}</span>
-          <select data-cam-id="${cam.cam_id}" class="protocol-select bg-surface-lowest border border-border-tac rounded px-1 py-0.5 text-txt-main text-[9px] outline-none focus:border-cyan-tac">
-            <option value="ndi" ${!isRtsp ? 'selected' : ''}>NDI (1080p)</option>
-            <option value="rtsp" ${isRtsp ? 'selected' : ''}>RTSP (720p)</option>
-          </select>
+    // Filtrar únicamente las cámaras online para configuración
+    const onlineCams = (currentCameras || []).filter(c => c.is_online);
+    if (onlineCams.length === 0) {
+      aliasesBox.innerHTML = `
+        <div class="text-txt-muted text-center py-2 text-[8.5px] italic bg-surface-lowest/30 rounded border border-border-tac/20" data-i18n="settings_no_online_cameras">
+          ${t("settings_no_online_cameras")}
         </div>
       `;
-      const inputEl = row.querySelector("input");
-      if (inputEl) {
-        inputEl.addEventListener("input", () => {
-          document.querySelectorAll(".alias-input").forEach(i => i.classList.remove("border-red-tac", "bg-red-dim/20"));
-          if (errBox) errBox.classList.add("hidden");
-        });
-      }
-      aliasesBox.appendChild(row);
-    });
+    } else {
+      onlineCams.forEach(cam => {
+        const row = document.createElement("div");
+        row.className = "flex flex-col gap-1.5 bg-surface-lowest/50 p-2 rounded border border-border-tac/30 shadow-xs";
+        const displayVal = getLocalizedAlias(cam);
+        const isRtsp = (cam.protocol === "rtsp");
+
+        // Driver virtual por el que sale esta cámara
+        let driverName = cam.vcam_driver;
+        if (!driverName) {
+          const isCam2 = (cam.alias && cam.alias.includes("2")) || (cam.ip && cam.ip.endsWith(".171")) || (cam.cam_id && cam.cam_id.includes("2"));
+          driverName = isCam2 ? "NDI Camara 2" : "NDI Camara 1";
+        }
+
+        row.innerHTML = `
+          <!-- Fila superior: IP y Driver Virtual de Salida DirectShow -->
+          <div class="flex items-center justify-between pb-1 border-b border-border-tac/20">
+            <div class="flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full bg-cyan-tac shadow-[0_0_4px_#00f0ff]"></span>
+              <span class="text-[9px] font-mono text-txt-main font-bold">${cam.ip}</span>
+            </div>
+            <div class="flex items-center gap-1">
+              <span class="material-symbols-outlined text-[12px] text-cyan-tac">videocam</span>
+              <span class="text-[7.5px] uppercase tracking-wider text-txt-muted font-bold">${t("settings_driver_output")}:</span>
+              <span class="px-1.5 py-0.2 rounded font-mono font-bold text-[8px] bg-cyan-dim/40 border border-cyan-tac/50 text-cyan-tac">
+                ${driverName} · ${isRtsp ? '720p' : '1080p'}
+              </span>
+            </div>
+          </div>
+
+          <!-- Fila inferior: Alias editable y selector de protocolo -->
+          <div class="flex items-center gap-1.5">
+            <div class="flex flex-col flex-1 gap-0.5 min-w-0">
+              <label class="text-[7.5px] uppercase font-bold text-txt-muted/80">${t("settings_alias_label")}</label>
+              <input type="text" data-cam-id="${cam.cam_id}" value="${displayVal}" placeholder="Alias..." class="alias-input bg-surface-lowest border border-border-tac rounded px-1.5 py-0.5 text-txt-main text-[9.5px] outline-none focus:border-cyan-tac transition-colors">
+            </div>
+            <div class="flex flex-col gap-0.5 w-[115px] shrink-0">
+              <label class="text-[7.5px] uppercase font-bold text-txt-muted/80">${t("settings_protocol_title")}</label>
+              <select data-cam-id="${cam.cam_id}" class="protocol-select bg-surface-lowest border border-border-tac rounded px-1 py-0.5 text-txt-main text-[9px] outline-none focus:border-cyan-tac">
+                <option value="ndi" ${!isRtsp ? 'selected' : ''}>NDI (1080p)</option>
+                <option value="rtsp" ${isRtsp ? 'selected' : ''}>RTSP (720p)</option>
+              </select>
+            </div>
+          </div>
+        `;
+        const inputEl = row.querySelector("input");
+        if (inputEl) {
+          inputEl.addEventListener("input", () => {
+            document.querySelectorAll(".alias-input").forEach(i => i.classList.remove("border-red-tac", "bg-red-dim/20"));
+            if (errBox) errBox.classList.add("hidden");
+          });
+        }
+        aliasesBox.appendChild(row);
+      });
+    }
   });
 }
 
@@ -661,10 +707,6 @@ function closeSettings() {
 }
 
 async function saveAndCloseSettings() {
-  const vcamName = document.getElementById("cfg-vcam-name").value.trim();
-  const rawIps = document.getElementById("cfg-extra-ips").value;
-  const extraIps = rawIps.split(",").map(s => s.trim()).filter(s => s.length > 0);
-
   // Verificación estricta: evitar que por error se ponga el mismo nombre a las cámaras
   const seenAliases = new Map();
   const duplicateInputs = [];
@@ -729,8 +771,6 @@ async function saveAndCloseSettings() {
   const recDir = recDirEl ? recDirEl.value.trim() : "";
 
   const payload = {
-    virtual_camera_name: vcamName,
-    extra_ips: extraIps,
     aliases: aliases,
     protocols: protocols,
     preview_fps: previewFps,

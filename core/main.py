@@ -104,7 +104,7 @@ def load_config():
         "virtual_camera_name": "NDI Virtual Camera",
         "selected_source": "",
         "auto_start_virtual_cam": False,
-        "resolution": {"width": 1920, "height": 1080, "fps": 30},
+        "resolution": {"width": 1920, "height": 1080, "fps": 25},
         "camera_aliases": {},
         "network": {"ndi_extra_ips": ["192.168.9.108", "192.168.9.171"]}
     }
@@ -163,6 +163,15 @@ class TacticalHttpHandler(SimpleHTTPRequestHandler):
 
         elif path == "/api/cameras":
             cams = discovery_daemon.get_all_cameras() if discovery_daemon else []
+            if vcam_manager:
+                online_count = sum(1 for c in cams if c.get("is_online"))
+                for c in cams:
+                    c["vcam_driver"] = vcam_manager.get_output_driver_label(
+                        channel_id=c.get("cam_id", ""),
+                        alias=c.get("alias", ""),
+                        ip=c.get("ip", ""),
+                        total_online=online_count
+                    )
             self._send_json(cams)
             return
 
@@ -374,6 +383,13 @@ class TacticalHttpHandler(SimpleHTTPRequestHandler):
                         for cam in discovery_daemon.cameras.values():
                             if cam.url_address == k or cam.ip == k or cam.cam_id == k:
                                 cam.protocol = p.lower()
+                                cam.resolution = "1280x720" if cam.protocol == "rtsp" else "1920x1080"
+                if vcam_manager:
+                    for k, p in protocols.items():
+                        is_c2 = ("2" in k) or ("171" in k)
+                        slot = "vcam_2" if is_c2 else "vcam_1"
+                        target_w, target_h = (1280, 720) if p.lower() == "rtsp" else (1920, 1080)
+                        vcam_manager.update_device_resolution(slot, target_w, target_h)
 
             save_config(app_config)
             self._send_json({"success": True, "config": app_config})
@@ -524,7 +540,7 @@ def main():
     cfg = load_config()
     res_w = cfg.get("resolution", {}).get("width", 1920)
     res_h = cfg.get("resolution", {}).get("height", 1080)
-    res_fps = cfg.get("resolution", {}).get("fps", 30)
+    res_fps = cfg.get("resolution", {}).get("fps", 25)
 
     # 2. Initialize Camera Discovery Daemon
     discovery_daemon = CameraDiscoveryDaemon(cfg)
@@ -532,7 +548,7 @@ def main():
 
     # 3. Initialize Virtual Camera Manager (Always-On Multicamera Bridge)
     vcam_manager = VirtualCameraManager(width=res_w, height=res_h, fps=res_fps)
-    vcam_manager.start_all(discovery_daemon.get_all_cameras())
+    vcam_manager.start_all(discovery_daemon.get_all_cameras(), config=cfg)
 
     # 4. Initialize Video Pipeline
     preview_fps = cfg.get("preview_fps", 4)
