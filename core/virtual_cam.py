@@ -33,7 +33,7 @@ class VirtualCameraDevice:
         self._cam = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         
         self._current_frame: Optional[np.ndarray] = None
         self._last_frame_time = 0.0
@@ -54,32 +54,10 @@ class VirtualCameraDevice:
         with self._lock:
             if self.width == width and self.height == height:
                 return
-            print(f"[VCAM] Adaptando resolución de {self.channel_id} ({self.device_name}) a {width}x{height}...", flush=True)
             self.width = width
             self.height = height
             self._standby_pattern = self._create_standby_pattern()
             self._current_frame = None
-            if self._cam:
-                try:
-                    self._cam.close()
-                except Exception as e:
-                    print(f"[WARN] Error al cerrar dispositivo virtual para cambio de resolución: {e}", flush=True)
-                kwargs = {
-                    "width": self.width,
-                    "height": self.height,
-                    "fps": int(self.fps),
-                    "fmt": PixelFormat.BGR,
-                    "print_fps": False
-                }
-                if self.device_name:
-                    kwargs["device"] = self.device_name
-                if self.backend:
-                    kwargs["backend"] = self.backend
-                try:
-                    self._cam = pyvirtualcam.Camera(**kwargs)
-                    print(f"[OK] Dispositivo virtual {self.channel_id} adaptado con éxito a {width}x{height} @ {self.fps}fps", flush=True)
-                except Exception as e:
-                    print(f"[ERROR] Error al recrear dispositivo virtual {self.channel_id}: {e}", flush=True)
 
     def is_receiving_frames(self) -> bool:
         """Returns True if this virtual camera device is currently receiving live video frames."""
@@ -215,6 +193,58 @@ class VirtualCameraDevice:
         }
 
 
+def get_installed_virtual_camera_drivers() -> List[str]:
+    """Detects available DirectShow virtual camera output drivers on the system."""
+    found = set()
+    try:
+        import winreg
+        guid = '{860BB310-5D01-11d0-BD3B-00A0C911CE86}'
+        for root in [winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER]:
+            for sub in [f'SOFTWARE\\Classes\\CLSID\\{guid}\\Instance', f'SOFTWARE\\WOW6432Node\\Classes\\CLSID\\{guid}\\Instance']:
+                try:
+                    k = winreg.OpenKey(root, sub)
+                    i = 0
+                    while True:
+                        try:
+                            inst = winreg.EnumKey(k, i)
+                            i += 1
+                            sk = winreg.OpenKey(k, inst)
+                            try:
+                                val, _ = winreg.QueryValueEx(sk, 'FriendlyName')
+                                if val:
+                                    lval = val.lower()
+                                    if any(x in lval for x in ['ndi camara', 'unity video capture', 'obs virtual camera']):
+                                        found.add(val)
+                            except Exception:
+                                pass
+                            winreg.CloseKey(sk)
+                        except WindowsError:
+                            break
+                    winreg.CloseKey(k)
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[WARN] Error al enumerar drivers DirectShow del registro: {e}", flush=True)
+
+    known_order = ["NDI Camara 1", "NDI Camara 2", "NDI Camara 3", "NDI Camara 4", "OBS Virtual Camera"]
+    result = []
+    for name in known_order:
+        if name in found or any(name.lower() == f.lower() for f in found):
+            result.append(name)
+
+    # Filter duplicate internal Unity names if NDI Camara is registered
+    has_ndi = any(r.startswith("NDI Camara") for r in result)
+    for f in sorted(found):
+        if f not in result and not f.startswith("Cámara Virtual NDI") and not f.startswith("Camara Virtual NDI"):
+            if has_ndi and f.startswith("Unity Video Capture"):
+                continue
+            result.append(f)
+
+    if not result:
+        result = ["NDI Camara 1", "NDI Camara 2"]
+    return result
+
+
 class VirtualCameraManager:
     """Coordinates one or multiple simultaneous virtual camera devices."""
     def __init__(self, width: int = 1920, height: int = 1080, fps: int = 25):
@@ -222,20 +252,21 @@ class VirtualCameraManager:
         self.height = height
         self.fps = fps
         self.devices: Dict[str, VirtualCameraDevice] = {}
+        self.camera_drivers: Dict[str, str] = {}
         self.is_active = False
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def get_or_create_device(self, channel_id: str, label: str, preferred_name: Optional[str] = None, width: Optional[int] = None, height: Optional[int] = None, fps: Optional[float] = None) -> VirtualCameraDevice:
         with self._lock:
             if channel_id not in self.devices:
-                backend = "unitycapture"
+                backend = "obs" if "OBS" in (preferred_name or "") else "unitycapture"
                 w = width or self.width
                 h = height or self.height
                 f = int(fps or self.fps)
                 dev = VirtualCameraDevice(
                     channel_id=channel_id,
                     label=label,
-                    device_name=preferred_name,
+                    device_name=preferred_name or channel_id,
                     backend=backend,
                     width=w,
                     height=h,
@@ -244,9 +275,44 @@ class VirtualCameraManager:
                 self.devices[channel_id] = dev
             return self.devices[channel_id]
 
+    def get_driver_for_camera(self, channel_id: str = "", source_label: str = "", ip: str = "") -> str:
+        """Resolves the assigned DirectShow driver name for a given camera."""
+        with self._lock:
+            # 1. Match by channel_id (e.g. cam-0200c0a8096c)
+            if channel_id and channel_id in self.camera_drivers:
+                return self.camera_drivers[channel_id]
+            # 2. Match by IP
+            if ip and ip in self.camera_drivers:
+                return self.camera_drivers[ip]
+            # 3. Match keys in source_label
+            for k, v in self.camera_drivers.items():
+                if (k and k in channel_id) or (k and k in source_label):
+                    return v
+            # 4. Default fallback: Cam 2 (192.168.9.171) -> NDI Camara 2, Cam 1 -> NDI Camara 1
+            is_c2 = ("2" in source_label) or ("171" in source_label) or ("171" in ip) or ("cam_2" in channel_id) or ("vcam_2" in channel_id)
+            return "NDI Camara 2" if is_c2 else "NDI Camara 1"
+
+    def update_driver_mapping(self, new_mapping: dict, protocols_cfg: dict = None):
+        """Updates driver associations dynamically and instantaneously."""
+        with self._lock:
+            self.camera_drivers.update(new_mapping)
+            print(f"[VCAM] Asignación de drivers DirectShow actualizada: {self.camera_drivers}", flush=True)
+
+    def get_output_driver_label(self, channel_id: str = "", alias: str = "", ip: str = "", total_online: int = 1) -> str:
+        """Returns the DirectShow virtual camera device name assigned to this camera."""
+        drv = self.get_driver_for_camera(channel_id=channel_id, source_label=f"{alias} {ip}", ip=ip)
+        if not drv or drv in ["(Ninguno)", "Desactivado", "none"]:
+            return "Desactivado"
+        return drv
+
     def update_device_resolution(self, channel_id: str, width: int, height: int):
         with self._lock:
             dev = self.devices.get(channel_id)
+            if not dev:
+                for d in self.devices.values():
+                    if d.device_name == channel_id:
+                        dev = d
+                        break
             if dev:
                 dev.update_resolution(width, height)
 
@@ -254,58 +320,40 @@ class VirtualCameraManager:
         if not self.is_active or not self.devices:
             return
 
-        dev1 = self.devices.get("vcam_1")
-        dev2 = self.devices.get("vcam_2")
+        drv_name = self.get_driver_for_camera(channel_id=channel_id, source_label=source_label)
+        if not drv_name or drv_name in ["(Ninguno)", "Desactivado", "none"]:
+            return
 
-        # Determine if this frame originates from Camera 2
-        is_cam2 = ("2" in source_label) or ("171" in source_label) or ("cam_2" in channel_id) or ("vcam_2" in channel_id)
-
-        if dev1 and dev2:
-            if is_cam2:
-                dev2.push_frame(frame_bgr, source_label)
-            else:
-                dev1.push_frame(frame_bgr, source_label)
-        elif dev2 and is_cam2:
-            dev2.push_frame(frame_bgr, source_label)
-        elif dev1 and not is_cam2:
-            dev1.push_frame(frame_bgr, source_label)
-        elif dev1:
-            dev1.push_frame(frame_bgr, source_label)
-        elif dev2:
-            dev2.push_frame(frame_bgr, source_label)
-        else:
+        dev = self.devices.get(drv_name)
+        if not dev:
             for d in self.devices.values():
-                d.push_frame(frame_bgr, source_label)
+                if d.device_name == drv_name:
+                    dev = d
+                    break
+        if dev:
+            dev.push_frame(frame_bgr, source_label)
 
     def update_device_fps(self, channel_id: str, fps: float):
         if not fps or fps <= 0:
             return
+        drv_name = self.get_driver_for_camera(channel_id=channel_id)
         with self._lock:
-            dev1 = self.devices.get("vcam_1")
-            dev2 = self.devices.get("vcam_2")
-            is_cam2 = ("2" in channel_id) or ("171" in channel_id) or ("vcam_2" in channel_id)
-            if is_cam2 and dev2:
-                dev2.update_fps(fps)
-            elif dev1 and not is_cam2:
-                dev1.update_fps(fps)
-            elif dev1:
-                dev1.update_fps(fps)
-            elif dev2:
-                dev2.update_fps(fps)
-            else:
+            dev = self.devices.get(drv_name)
+            if not dev:
                 for d in self.devices.values():
-                    d.update_fps(fps)
+                    if d.device_name == drv_name:
+                        dev = d
+                        break
+            if dev:
+                dev.update_fps(fps)
 
     def start_all(self, camera_list: Optional[List[dict]] = None, config: Optional[dict] = None) -> bool:
         """Starts simultaneous virtual camera devices matching camera resolutions."""
         all_ok = True
-        # Device names for UnityCapture multi-camera backend
-        device_names = [
-            "NDI Camara 1",
-            "NDI Camara 2",
-            "NDI Camara 3",
-            "NDI Camara 4"
-        ]
+        cams = list(camera_list or [])
+        protocols_cfg = (config or {}).get("camera_protocols", {})
+        if config and "camera_drivers" in config:
+            self.camera_drivers.update(config["camera_drivers"])
 
         # First check if unitycapture is installed
         unitycapture_ready = False
@@ -316,63 +364,40 @@ class VirtualCameraManager:
         except Exception:
             unitycapture_ready = False
 
-        cams = list(camera_list or [])
-        protocols_cfg = (config or {}).get("camera_protocols", {})
-        num_devices = max(2, len(cams)) if unitycapture_ready else 1
+        installed = get_installed_virtual_camera_drivers()
+        needed_drivers = []
+        for name in ["NDI Camara 1", "NDI Camara 2"]:
+            if name in installed or unitycapture_ready:
+                if name not in needed_drivers:
+                    needed_drivers.append(name)
 
-        for idx in range(num_devices):
-            slot_id = f"vcam_{idx+1}"
-            pref_name = device_names[idx] if idx < len(device_names) else None
-            is_slot2 = (idx == 1)
+        for drv in self.camera_drivers.values():
+            if drv and drv not in ["(Ninguno)", "Desactivado", "none"] and drv not in needed_drivers:
+                needed_drivers.append(drv)
 
-            # Match camera info for this slot
-            matched_cam = None
+        for drv_name in needed_drivers:
+            proto = "ndi"
+            cam_alias = drv_name
             for c in cams:
-                c_alias = str(c.get("alias", ""))
-                c_ip = str(c.get("ip", ""))
-                c_id = str(c.get("cam_id", ""))
-                if is_slot2:
-                    if ("2" in c_alias) or ("171" in c_ip) or ("2" in c_id):
-                        matched_cam = c
-                        break
-                else:
-                    if ("1" in c_alias) or ("108" in c_ip) or ("1" in c_id):
-                        matched_cam = c
-                        break
+                c_drv = self.get_driver_for_camera(channel_id=c.get("cam_id", ""), ip=c.get("ip", ""), source_label=c.get("alias", ""))
+                if c_drv == drv_name:
+                    proto = c.get("protocol") or protocols_cfg.get(c.get("cam_id", "")) or protocols_cfg.get(c.get("ip", "")) or "ndi"
+                    cam_alias = c.get("alias", drv_name)
+                    break
 
-            if not matched_cam and idx < len(cams):
-                matched_cam = cams[idx]
+            dev_w, dev_h = (1280, 720) if str(proto).lower() == "rtsp" else (self.width, self.height)
+            backend = "obs" if "OBS" in drv_name else "unitycapture"
 
-            alias = matched_cam.get("alias") if matched_cam else f"Cám {idx+1}"
-
-            # Determine protocol: RTSP (720p) vs NDI (1080p)
-            c_proto = "ndi"
-            if matched_cam:
-                c_proto = matched_cam.get("protocol") or protocols_cfg.get(matched_cam.get("cam_id", "")) or protocols_cfg.get(matched_cam.get("ip", "")) or "ndi"
-            else:
-                if is_slot2:
-                    c_proto = protocols_cfg.get("192.168.9.171", "rtsp")
-                else:
-                    c_proto = protocols_cfg.get("192.168.9.108", "ndi")
-
-            # Low resource mode: RTSP delivers 720p natively to directshow
-            if str(c_proto).lower() == "rtsp":
-                dev_w, dev_h = 1280, 720
-            else:
-                dev_w, dev_h = self.width, self.height
-
-            if unitycapture_ready:
-                dev = self.get_or_create_device(slot_id, alias, preferred_name=pref_name, width=dev_w, height=dev_h, fps=self.fps)
-                dev.device_name = pref_name
-                dev.backend = "unitycapture"
-            else:
-                # Fallback to single-camera OBS backend for primary camera
-                if idx == 0:
-                    dev = self.get_or_create_device(slot_id, alias, preferred_name="OBS Virtual Camera", width=dev_w, height=dev_h, fps=self.fps)
-                    dev.backend = "obs"
-                else:
-                    continue
-
+            dev = self.get_or_create_device(
+                channel_id=drv_name,
+                label=cam_alias,
+                preferred_name=drv_name,
+                width=dev_w,
+                height=dev_h,
+                fps=self.fps
+            )
+            dev.device_name = drv_name
+            dev.backend = backend
             ok = dev.start()
             if not ok:
                 all_ok = False
@@ -392,21 +417,6 @@ class VirtualCameraManager:
 
     def stop(self):
         self.stop_all()
-
-    def get_output_driver_label(self, channel_id: str = "", alias: str = "", ip: str = "", total_online: int = 1) -> str:
-        """Returns the DirectShow virtual camera device name assigned to this camera."""
-        if not self.is_active or not self.devices:
-            return "Desactivado"
-
-        has_dev1 = "vcam_1" in self.devices or any(d.device_name == "NDI Camara 1" for d in self.devices.values())
-        has_dev2 = "vcam_2" in self.devices or any(d.device_name == "NDI Camara 2" for d in self.devices.values())
-
-        is_cam2 = ("2" in alias) or ("171" in ip) or ("cam_2" in channel_id) or ("vcam_2" in channel_id)
-
-        if is_cam2:
-            return "NDI Camara 2" if has_dev2 else "NDI Camara 1"
-        else:
-            return "NDI Camara 1" if has_dev1 else ("NDI Camara 2" if has_dev2 else "Desactivado")
 
     def get_status(self) -> dict:
         with self._lock:

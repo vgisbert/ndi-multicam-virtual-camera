@@ -21,9 +21,11 @@ print("   NDI VIRTUAL CAMERA - COMPILADOR A EJECUTABLE (.EXE)")
 print("   Generando distribucion portable para Windows 10/11")
 print("=" * 65)
 
-# Terminar cualquier instancia previa del ejecutable para evitar bloqueos de archivos en dist
+# Terminar cualquier instancia previa del ejecutable o procesos residuales de WebView2 para evitar bloqueos de archivos en dist
 try:
     subprocess.run(["taskkill", "/F", "/IM", "NDI Virtual Camera.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    ps_kill_wv = "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '*msedgewebview2*' -and ($_.CommandLine -like '*NDI Virtual Camera*' -or $_.CommandLine -like '*dist_portable*' -or $_.CommandLine -like '*dist*') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+    subprocess.run(["powershell", "-NoProfile", "-Command", ps_kill_wv], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 except Exception:
     pass
 

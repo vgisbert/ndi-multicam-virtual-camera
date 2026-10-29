@@ -31,12 +31,22 @@
 4. **Grabación Dual Simultánea MKV (Hardware Accelerated):**  
    Grabador integrado que emite y almacena simultáneamente ambas señales en ficheros Matroska MKV con detección automática de aceleradores de hardware (`h264_nvenc` de NVIDIA, `h264_qsv` de Intel, `h264_amf` de AMD o `libx264 ultrafast` por CPU). Los ficheros son inmunes a cortes eléctricos y no degradan la entrega a la cámara virtual.
 
-5. **Ciclo de Vida Blindado y Desbloqueo de Drivers:**  
-   Protocolo de arranque preventivo contra instancias zombies anteriores (con reasignación de puerto anti-pantalla blanca) y cierre atómico ordenado que descarga inmediatamente las librerías DirectShow (`UnityCaptureFilter64.dll`), evitando el típico problema de Windows donde los archivos quedan bloqueados hasta reiniciar el PC.
+5. **Reasignación Dinámica e Intercambio de Drivers DirectShow (*Hot-Swap*):**  
+   Permite vincular interactivamente cualquier cámara descubierta a cualquier driver DirectShow instalado en Windows (`NDI Camara 1`, `NDI Camara 2`, `OBS Virtual Camera`, etc.). Si un driver seleccionado ya está en uso, el sistema efectúa un intercambio (*swap*) automático, manteniendo los flujos balanceados sin reiniciar ni recrear filtros COM en caliente.
 
-6. **Arquitectura y Distribución Portable:**  
-   * **Entorno de desarrollo Python:** Servidor HTTP táctico local + GUI en PyWebView (`arrancar.bat`).
+6. **Gestión de Alias Personalizados y Sincronización en Tiempo Real:**  
+   Asignación intuitiva de nombres tácticos para cada cámara (ej. *Cámara Frontal*, *Cámara Mesa*). Las modificaciones se reflejan de inmediato en las tarjetas de la interfaz principal, se propagan a los trabajadores del pipeline y se guardan de forma persistente en `config.json`.
+
+7. **Tráfico de Red Optimizado y Silencio en Emisión:**  
+   La búsqueda activa por mDNS, unicast NDI y sondeos de puertos opera únicamente durante los primeros 8 segundos de arranque y mientras el panel de ajustes permanece abierto. Durante la emisión en la ventana principal, el escaneo entra en reposo pasivo absoluto, garantizando cero perturbaciones de red y mínimo uso de CPU.
+
+8. **Ciclo de Vida Blindado y Cierre Atómico (Cero Procesos Zombies):**  
+   Auto-asignación a *Windows Job Objects* (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) y salida forzada a nivel de kernel mediante `TerminateProcess(GetCurrentProcess(), 0)` (`force_clean_exit`). Garantiza que al cerrar con el aspa `X` todos los subprocesos de WebView2 y FFmpeg son purgados instantáneamente y los descriptores DirectShow se descargan de inmediato.
+
+9. **Arquitectura, Distribución Portable y Respaldo:**  
+   * **Entorno de desarrollo Python:** Servidor HTTP táctico local + GUI en PyWebView ([`arrancar.bat`](file:///arrancar.bat)).
    * **Suite Portable Lista para Usar:** Paquete empaquetado en [`dist_portable/`](file:///dist_portable/) con ejecutable autónomo (`NDI Virtual Camera.exe`), dependencias NDI y FFmpeg integradas, y paquete comprimido `.zip` listo para pendrive.
+   * **Sistema de Respaldo Automatizado:** Script [`backup.py`](file:///backup.py) para generar copias de seguridad versionadas por fecha y hora con empaquetado `.zip` automático.
 
 ---
 

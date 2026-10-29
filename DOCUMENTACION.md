@@ -163,6 +163,7 @@ Al comparar ejecuciones en Windows 10 y Windows 11, pueden observarse lecturas d
 4. **Medición instantánea sin promedio:**  
    El valor es una fotografía instantánea del último paquete enviado en ese segundo exacto, por lo que fluctúa en tiempo real según el momento de captura.
 
+
 ### 6.3. Resolución de Direcciones MAC (ARP vs. Sintética Fallback)
 En las tarjetas de cámara de la interfaz se refleja la dirección física:
 * **En Windows 10:** Puede observarse `02:00:C0:A8:XX:XX`. Es una dirección MAC sintética (falsa) que el código genera como mecanismo de contingencia cuando la API nativa de Windows `iphlpapi.SendARP` no recibe respuesta directa (frecuente si existe aislamiento de clientes en el punto de acceso, enrutamiento intermedio o firewalls locales).
@@ -170,6 +171,32 @@ En las tarjetas de cámara de la interfaz se refleja la dirección física:
 
 ### 6.4. Impacto en la Fluidez y Emisión en Directo
 En un flujo de vídeo estándar a 30 FPS, cada fotograma dura **33.3 ms**. Una latencia de red de **11.4 ms** representa apenas un tercio de un fotograma, por lo que se sitúa ampliamente en el umbral de **tiempo real óptimo**, garantizando una sincronización perfecta sin saltos ni congelaciones tanto en Windows 10 como en Windows 11.
+
+### 6.5. Reasignación Dinámica e Intercambio de Drivers DirectShow
+La aplicación permite vincular de manera flexible y personalizada cada cámara de red a cualquier driver virtual DirectShow instalado en el sistema (`NDI Camara 1`, `NDI Camara 2`, `OBS Virtual Camera`, etc.):
+1. **Botón Interactivo de Driver:** En la ventana de configuración, el indicador del driver asociado se comporta como un botón táctico desplegable que lista todos los drivers virtuales instalados en Windows.
+2. **Lógica de Intercambio Automático (Swap):** Si el operador selecciona un driver que ya se encuentra asignado a otra cámara, el sistema realiza automáticamente un intercambio (*swap*), asignando el driver previo a la otra cámara y el nuevo a la cámara actual. Ambos botones se actualizan en tiempo real con una animación visual de confirmación.
+3. **Liberación y Desactivación:** Si se selecciona un driver libre o la opción `(Ninguno)`, el driver anterior queda liberado y la cámara puede permanecer sin salida DirectShow (`Desactivado`), evitando colisiones y uso innecesario de buffers de render.
+4. **Persistencia en `config.json`:** Las asignaciones se guardan en la clave `"camera_drivers"` y se restauran fielmente al iniciar el programa.
+
+### 6.6. Prevención de Bloqueos (Deadlocks) y Reescalado en Memoria
+Para garantizar que la reasignación de drivers o el cambio de resolución/protocolo nunca congele la aplicación:
+1. **Eliminación del Deadlock COM en DirectShow:** La destrucción y recreación en caliente de instancias `pyvirtualcam` provocaba un bloqueo mutuo (*deadlock*) irreversible en los descriptores COM de Windows (`UnityCaptureFilter64.dll`). Este comportamiento se erradicó implementando reescalado en memoria (`cv2.resize`) adaptativo: el dispositivo virtual DirectShow se inicializa una sola vez a su resolución nativa y el pipeline ajusta en RAM las dimensiones del fotograma antes de inyectarlo.
+2. **Cerrojos Reentrantes (`threading.RLock`):** Los bloqueos simples `threading.Lock()` fueron reemplazados por `threading.RLock()` en `VirtualCameraManager` y `CameraDiscoveryDaemon`, permitiendo que el hilo de interfaz o de reasignación invoque métodos sincronizados de forma anidada sin riesgo de auto-bloqueo.
+
+### 6.7. Política de Búsqueda en Red y Optimización de Tráfico ARP
+Para garantizar la máxima estabilidad del enlace de vídeo y evitar el tráfico innecesario en la red local:
+1. **Caché de Direcciones Físicas (SendARP):** La API nativa de Windows `iphlpapi.SendARP` solo se invoca una única vez por cada dirección IP detectada. El resultado se almacena en `_MAC_CACHE`. Si el dispositivo ya está indexado, no se vuelve a generar ninguna petición ARP en la red.
+2. **Búsqueda en el Arranque (Boot Scan):** El demonio de descubrimiento (`CameraDiscoveryDaemon`) ejecuta la búsqueda activa por mDNS, unicast NDI y sondeo de puertos TCP únicamente durante los primeros **8 segundos** tras el inicio para detectar y enlazar las cámaras disponibles.
+3. **Reposo Silencioso en Ventana Principal:** Una vez transcurrida la fase inicial de arranque, el escaneo activo se detiene automáticamente y entra en espera pasiva (`_scan_event.wait`). Durante la emisión en la ventana principal, **no se realiza ningún sondeo programado en segundo plano**, reduciendo a cero el ruido en la red y liberando ciclos de CPU.
+4. **Activación Exclusiva en Configuración:** Cuando el usuario abre el panel de configuración (modal de ajustes), el cliente web envía una petición `POST /api/discovery/start` que reactiva la búsqueda en red para reflejar cámaras nuevas o reconexiones al vuelo. Al cerrar la configuración (`POST /api/discovery/stop`, por guardado, aspa, Escape o clic fuera), la búsqueda se apaga de inmediato.
+
+### 6.8. Gestión y Persistencia de Nombres Personalizados (Alias) de Cámaras
+La asignación de alias para cada cámara permite una identificación táctica clara en la emisión:
+1. **Prioridad Absoluta al Nombre de Usuario:** La interfaz respeta incondicionalmente cualquier nombre ingresado por el operador. Las etiquetas automáticas o por defecto (`Cám 1`, `Cám 2`) solo se emplean si el campo se deja expresamente vacío.
+2. **Sincronización Inmediata en el DOM:** Al presionar **Guardar**, el nombre se proyecta instantáneamente sobre las cabeceras `.cam-alias` de las tarjetas de cámara en pantalla y sobre los trabajadores del pipeline (`video_pipeline.workers`) con cero latencia visual.
+3. **Validación Anti-Colisiones Agrupada por IP Física:** En el backend (`core/main.py`), la validación verifica la unicidad de nombres agrupando por la dirección física/IP de cada cámara. Esto previene falsos positivos provocados por representaciones redundantes de una misma cámara física (como identificadores de MAC sintética vs. resuelta).
+4. **Persistencia Sincronizada:** Los alias se guardan en `config.json` bajo `"camera_aliases"` y se sincronizan atómicamente con `discovery_daemon.config`, garantizando que futuros barridos de red respeten siempre el nombre personalizado configurado por el usuario.
 
 ---
 
@@ -484,10 +511,16 @@ Para asegurar que **nunca más queden procesos en segundo plano ni drivers bloqu
    - **Paso 2:** Se llama a `VirtualCameraManager.stop_all()`. Cada dispositivo virtual `VirtualCameraDevice` cancela su hilo de renderizado, invoca explícitamente `cam.close()` en `pyvirtualcam` y desmapea los canales de memoria compartida Win32. Al no quedar descriptores abiertos, Windows descarga de inmediato `UnityCaptureFilter64.dll`.
    - **Paso 3:** Se detiene el demonio de autodescubrimiento NDI y se destruye el objeto NDI Finder.
    - **Paso 4:** Se cierra el socket HTTP con `server.server_close()` en lugar de `shutdown()`, evitando esperas innecesarias de *keep-alive*.
-   - **Paso 5:** Se invoca `os._exit(0)` para terminar el proceso inmediatamente a nivel de kernel, impidiendo que hilos secundarios de C/C++ queden como zombies.
-3. **Enganches a Eventos de Ventana y Señales:**
+   - **Paso 5:** Se invoca `kill_all_child_processes()` para eliminar de inmediato el árbol de subprocesos Chromium/WebView2 (renderer, GPU, utility, etc.) y FFmpeg.
+   - **Paso 6:** Se ejecuta `force_clean_exit()` mediante la API Win32 `TerminateProcess(GetCurrentProcess(), 0)` para evitar el *deadlock* del cargador de módulos de Windows (*Loader Lock en DLL_PROCESS_DETACH*) y garantizar salida inmediata sin procesos zombies.
+3. **Protección a Nivel de Kernel con Windows Job Objects (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`):**
+   - Al arrancar la aplicación, el proceso se auto-asigna a un *Windows Job Object* configurado con la bandera `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (0x2000)`.
+   - Esto delega en el kernel del sistema operativo Windows la garantía absoluta de que, si el proceso anfitrión se cierra por cualquier causa (clic en el aspa `X`, terminación de tarea, excepción o cierre forzoso), **todos los subprocesos hijos** generados por Microsoft Edge WebView2 (6 procesos: Browser, GPU, Network, Storage, Renderer, Crashpad) son purgados instantáneamente sin dejar procesos zombies en memoria.
+4. **Barrido de Procesos Huérfanos en Inicio (`kill_orphan_instances`):**
+   - En el arranque, además de comprobar el puerto 8765 y procesos anteriores del ejecutable, se ejecuta un barrido proactivo de procesos `msedgewebview2.exe` huérfanos asociados a sesiones anteriores para garantizar memoria 100% limpia.
+5. **Enganches a Eventos de Ventana y Señales:**
    - `webview_window.events.closing`: inicia la liberación en el instante en que el usuario hace clic en el aspa `X` de Windows.
-   - `webview_window.events.closed`: ejecuta la salida definitiva `os._exit(0)`.
+   - `webview_window.events.closed`: ejecuta la terminación de subprocesos hijos y la salida inmediata e incondicional con `force_clean_exit()`.
    - Manejadores de señal `SIGINT` (Ctrl+C), `SIGTERM` y `atexit.register()`.
 
 ### 11.4. Resiliencia en Compilación y Despliegue (`build_exe.py`)
@@ -540,6 +573,25 @@ Al conectar OBS a un dispositivo virtual `NDI Camara 2`, puede observarse en el 
    - En **FPS**, selecciona **`25`** (o *«Hacer coincidir con los FPS de salida»*).
    - Pulsa **Aceptar**.
    Tras este ajuste único, OBS leerá el flujo de memoria compartida directamente a 1280x720 @ 25.0 FPS, logrando el mínimo consumo de GPU y CPU en el sistema.
+
+---
+
+## 13. Sistema de Copia de Seguridad Automatizada (`backup.py`)
+
+Para garantizar la integridad del código fuente, configuraciones y documentación ante cambios o despliegues, la suite incluye un script de respaldo integral [`backup.py`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/backup.py) basado en las especificaciones de [`GUIA_CONTEXTO_PROBLEMAS_ENTORNO_Y_BACKUP.md`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/GUIA_CONTEXTO_PROBLEMAS_ENTORNO_Y_BACKUP.md).
+
+### 13.1. Características Técnicas:
+1. **Versionado por Marca Temporal (Timestamp):** Cada ejecución genera un directorio aislado y único en `backups/backup_YYYYMMDD_HHMMSS/` y un archivo comprimido sincronizado `.zip`.
+2. **Exclusión Inteligente de Binarios Pesados y Artefactos Temporales:**
+   - Omite automáticamente el entorno virtual (`core/venv/`), directorios de compilación (`target/`, `dist/`, `dist_portable/`), cachés de Python (`__pycache__`, `*.pyc`), grabaciones de vídeo (`*.mkv`, `*.mp4`) y logs temporales.
+3. **Resguardo Exhaustivo Multi-Capa:**
+   - **Frontend & UI:** Código táctico HTML/Tailwind/JS (`ui/` y `frontend/`).
+   - **Backend Python:** Motor NDI, servidores y lógica de red (`core/`).
+   - **Motor Nativo Rust / Tauri:** Código de bajo nivel en [`src-tauri/`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/src-tauri/).
+   - **Configuración y Scripts:** `config.json`, `arrancar.bat`, `compilar_y_empaquetar.bat`, `build_exe.py` y el propio `backup.py`.
+   - **Documentación Viva:** Todas las guías técnicas, especificaciones y manuales Markdown.
+4. **Métricas en Pantalla:** Reporta en tiempo real cada elemento respaldado, su peso en bytes, el total acumulado en megabytes y la confirmación del archivo `.zip` generado.
+
 
 
 

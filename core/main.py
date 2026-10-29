@@ -23,6 +23,12 @@ if getattr(sys, "frozen", False):
     CORE_DIR = os.path.join(BUNDLE_DIR, "core") if os.path.exists(os.path.join(BUNDLE_DIR, "core")) else BUNDLE_DIR
     UI_DIR = os.path.join(BUNDLE_DIR, "ui") if os.path.exists(os.path.join(BUNDLE_DIR, "ui")) else os.path.join(EXE_DIR, "ui")
     CONFIG_PATH = os.path.join(EXE_DIR, "config.json")
+    try:
+        _log_file = open(os.path.join(EXE_DIR, "vcam_debug.log"), "w", encoding="utf-8", buffering=1)
+        sys.stdout = _log_file
+        sys.stderr = _log_file
+    except Exception:
+        pass
 else:
     CORE_DIR = os.path.dirname(os.path.abspath(__file__))
     BASE_DIR = os.path.dirname(CORE_DIR)
@@ -51,6 +57,210 @@ is_window_pinned = False
 
 _shutdown_lock = threading.Lock()
 _is_shutting_down = False
+
+# =========================================================================
+# Windows Win32 API: Job Objects y Administrador de Procesos Hijos (Anti-Zombies)
+# =========================================================================
+import ctypes
+from ctypes import wintypes
+
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("PerProcessUserTimeLimit", wintypes.LARGE_INTEGER),
+        ("PerJobUserTimeLimit", wintypes.LARGE_INTEGER),
+        ("LimitFlags", wintypes.DWORD),
+        ("MinimumWorkingSetSize", ctypes.c_size_t),
+        ("MaximumWorkingSetSize", ctypes.c_size_t),
+        ("ActiveProcessLimit", wintypes.DWORD),
+        ("Affinity", ctypes.c_size_t),
+        ("PriorityClass", wintypes.DWORD),
+        ("SchedulingClass", wintypes.DWORD),
+    ]
+
+class IO_COUNTERS(ctypes.Structure):
+    _fields_ = [
+        ("ReadOperationCount", ctypes.c_uint64),
+        ("WriteOperationCount", ctypes.c_uint64),
+        ("OtherOperationCount", ctypes.c_uint64),
+        ("ReadTransferCount", ctypes.c_uint64),
+        ("WriteTransferCount", ctypes.c_uint64),
+        ("OtherTransferCount", ctypes.c_uint64),
+    ]
+
+class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+        ("IoCounters", IO_COUNTERS),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryLimit", ctypes.c_size_t),
+        ("PeakJobMemoryLimit", ctypes.c_size_t),
+    ]
+
+JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+JobObjectExtendedLimitInformation = 9
+PROCESS_TERMINATE = 0x0001
+TH32CS_SNAPPROCESS = 0x00000002
+
+class PROCESSENTRY32(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", wintypes.DWORD),
+        ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase", wintypes.LONG),
+        ("dwFlags", wintypes.DWORD),
+        ("szExeFile", ctypes.c_char * 260)
+    ]
+
+_kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+_kernel32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
+_kernel32.SetInformationJobObject.restype = wintypes.BOOL
+_kernel32.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD)
+_kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+_kernel32.GetCurrentProcess.argtypes = ()
+_kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+_kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+_kernel32.OpenProcess.restype = wintypes.HANDLE
+_kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+_kernel32.TerminateProcess.restype = wintypes.BOOL
+_kernel32.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+_kernel32.CloseHandle.restype = wintypes.BOOL
+_kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+
+_global_job_handle = None
+
+def init_job_object():
+    """
+    Asigna el proceso actual a un Windows Job Object configurado con JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
+    Garantiza a nivel de kernel de Windows que cualquier proceso hijo (WebView2 renderer, gpu,
+    subprocesos ffmpeg, etc.) sea terminado automáticamente e instantáneamente cuando la
+    aplicación se cierre, impidiendo que queden procesos zombies en memoria.
+    """
+    global _global_job_handle
+    try:
+        job = _kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return False
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE (0x2000) + JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK (0x1000)
+        # para permitir que WebView2 cree sus propios jobs anidados sin restricciones de seguridad.
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | 0x1000
+        ok = _kernel32.SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            ctypes.byref(info),
+            ctypes.sizeof(info)
+        )
+        if not ok:
+            return False
+        if _kernel32.AssignProcessToJobObject(job, _kernel32.GetCurrentProcess()):
+            _global_job_handle = job
+            return True
+    except Exception as e:
+        print(f"[WARN] No se pudo inicializar Job Object: {e}", flush=True)
+    return False
+
+def find_pids_by_name(process_name: str) -> list:
+    """Busca PIDs por nombre de ejecutable de forma instantánea usando Win32 Toolhelp (<0.001s)."""
+    h_snap = _kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if h_snap == -1:
+        return []
+    target = process_name.lower()
+    if not target.endswith(".exe"):
+        target += ".exe"
+    pids = []
+    entry = PROCESSENTRY32()
+    entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
+    if _kernel32.Process32First(h_snap, ctypes.byref(entry)):
+        while True:
+            exe_str = entry.szExeFile.decode("latin1", errors="ignore").lower()
+            if exe_str == target:
+                pids.append(entry.th32ProcessID)
+            if not _kernel32.Process32Next(h_snap, ctypes.byref(entry)):
+                break
+    _kernel32.CloseHandle(h_snap)
+    return pids
+
+def get_descendant_pids(parent_pid: int) -> list:
+    """Encuentra recursivamente todos los PIDs hijos y descendientes de un PID dado usando Win32 Toolhelp."""
+    h_snap = _kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if h_snap == -1:
+        return []
+    parent_to_children = {}
+    entry = PROCESSENTRY32()
+    entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
+    if _kernel32.Process32First(h_snap, ctypes.byref(entry)):
+        while True:
+            ppid = entry.th32ParentProcessID
+            pid = entry.th32ProcessID
+            if ppid not in parent_to_children:
+                parent_to_children[ppid] = []
+            parent_to_children[ppid].append(pid)
+            if not _kernel32.Process32Next(h_snap, ctypes.byref(entry)):
+                break
+    _kernel32.CloseHandle(h_snap)
+
+    descendants = []
+    queue = [parent_pid]
+    while queue:
+        curr = queue.pop(0)
+        children = parent_to_children.get(curr, [])
+        for ch in children:
+            if ch not in descendants:
+                descendants.append(ch)
+                queue.append(ch)
+    return descendants
+
+def terminate_process_by_pid_fast(pid: int):
+    """Termina inmediatamente un proceso por PID usando la API nativa de Windows."""
+    if pid <= 0 or pid == os.getpid():
+        return
+    try:
+        h = _kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
+        if h:
+            _kernel32.TerminateProcess(h, 1)
+            _kernel32.CloseHandle(h)
+            return True
+    except Exception:
+        pass
+    try:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+    return False
+
+def kill_all_child_processes():
+    """Termina inmediatamente todos los subprocesos hijos y nietos del proceso actual (árbol WebView2/ffmpeg)."""
+    my_pid = os.getpid()
+    descendants = get_descendant_pids(my_pid)
+    for pid in reversed(descendants):
+        terminate_process_by_pid_fast(pid)
+
+def force_clean_exit(code: int = 0):
+    """
+    Termina de forma definitiva e instantánea el proceso actual y todos sus subprocesos.
+    Utiliza Win32 TerminateProcess sobre GetCurrentProcess() para evitar deadlocks del Loader Lock
+    (DLL_PROCESS_DETACH) producidos por librerías nativas complejas (NDI C++, DirectShow, .NET CLR).
+    """
+    try:
+        cleanup_all(reason="force_exit")
+    except Exception:
+        pass
+    try:
+        kill_all_child_processes()
+    except Exception:
+        pass
+    try:
+        _kernel32.TerminateProcess(_kernel32.GetCurrentProcess(), code)
+    except Exception:
+        pass
+    os._exit(code)
 
 def cleanup_all(reason="exit"):
     global _is_shutting_down, server_instance, video_pipeline, vcam_manager, discovery_daemon
@@ -88,6 +298,12 @@ def cleanup_all(reason="exit"):
             server_instance.server_close()
         except Exception:
             pass
+
+    # 5. Terminar subprocesos hijos (WebView2, ffmpeg, renderers)
+    try:
+        kill_all_child_processes()
+    except Exception as e:
+        print(f"[WARN] Error al terminar subprocesos hijos: {e}", flush=True)
 
     print("[OK] Todos los recursos, dispositivos virtuales y flujos liberados correctamente.", flush=True)
 
@@ -184,6 +400,17 @@ class TacticalHttpHandler(SimpleHTTPRequestHandler):
             self._send_json(app_config)
             return
 
+        elif path == "/api/discovery/status":
+            scanning = discovery_daemon.is_scanning() if discovery_daemon else False
+            self._send_json({"scanning": scanning})
+            return
+
+        elif path == "/api/drivers":
+            from virtual_cam import get_installed_virtual_camera_drivers
+            installed = get_installed_virtual_camera_drivers()
+            self._send_json({"drivers": installed})
+            return
+
         # Serve static UI files
         super().do_GET()
 
@@ -198,7 +425,33 @@ class TacticalHttpHandler(SimpleHTTPRequestHandler):
         except Exception:
             payload = {}
 
-        if path == "/api/pgm":
+        if path == "/api/discovery/start":
+            if discovery_daemon:
+                discovery_daemon.set_scanning_active(True)
+            self._send_json({"success": True, "scanning": True})
+            return
+
+        elif path == "/api/discovery/stop":
+            if discovery_daemon:
+                discovery_daemon.set_scanning_active(False)
+            self._send_json({"success": True, "scanning": False})
+            return
+
+        elif path == "/api/drivers/reassign":
+            cam_drivers = payload.get("camera_drivers")
+            if isinstance(cam_drivers, dict):
+                if "camera_drivers" not in app_config:
+                    app_config["camera_drivers"] = {}
+                app_config["camera_drivers"].update(cam_drivers)
+                if vcam_manager:
+                    vcam_manager.update_driver_mapping(app_config["camera_drivers"], app_config.get("camera_protocols", {}))
+                save_config(app_config)
+                self._send_json({"success": True, "camera_drivers": app_config["camera_drivers"]})
+                return
+            self._send_json({"success": False, "error": "Datos inválidos"})
+            return
+
+        elif path == "/api/pgm":
             cam_id = payload.get("cam_id")
             if cam_id and discovery_daemon:
                 ok = discovery_daemon.set_pgm(cam_id)
@@ -350,28 +603,40 @@ class TacticalHttpHandler(SimpleHTTPRequestHandler):
                 if discovery_daemon:
                     discovery_daemon.update_extra_ips(extra_ips)
             if aliases:
-                # Chequeo en backend: evitar que se asigne el mismo nombre a dos cámaras distintas
+                # Chequeo en backend: evitar que se asigne el mismo nombre a dos cámaras físicas distintas
                 if discovery_daemon and getattr(discovery_daemon, "cameras", None):
                     cam_map = {}
                     for cam_id, cam in discovery_daemon.cameras.items():
                         alias_val = aliases.get(cam.cam_id) or aliases.get(cam.ip) or aliases.get(cam.url_address)
                         if alias_val:
                             alias_norm = alias_val.strip().lower()
-                            if alias_norm in cam_map and cam_map[alias_norm] != cam_id:
+                            cam_key = cam.ip or cam_id
+                            if alias_norm in cam_map and cam_map[alias_norm] != cam_key:
                                 self._send_json({
                                     "success": False,
                                     "error": f"Nombre duplicado '{alias_val}': cada cámara debe tener un nombre único."
                                 })
                                 return
-                            cam_map[alias_norm] = cam_id
+                            cam_map[alias_norm] = cam_key
 
                 if "camera_aliases" not in app_config:
                     app_config["camera_aliases"] = {}
                 app_config["camera_aliases"].update(aliases)
-                for k, v in aliases.items():
-                    for cam in discovery_daemon.cameras.values():
-                        if cam.url_address == k or cam.ip == k or cam.cam_id == k:
-                            cam.alias = v if v else f"Cámara {cam.ip.split('.')[-1]}"
+                if discovery_daemon:
+                    if "camera_aliases" not in discovery_daemon.config:
+                        discovery_daemon.config["camera_aliases"] = {}
+                    discovery_daemon.config["camera_aliases"].update(app_config["camera_aliases"])
+                    with discovery_daemon._lock:
+                        for k, v in aliases.items():
+                            for cam in discovery_daemon.cameras.values():
+                                if cam.url_address == k or cam.ip == k or cam.cam_id == k:
+                                    cam.alias = v if v else f"Cámara {cam.ip.split('.')[-1]}"
+
+                if video_pipeline and hasattr(video_pipeline, "workers"):
+                    for c_id, worker in video_pipeline.workers.items():
+                        cam = discovery_daemon.get_camera(c_id) if discovery_daemon else None
+                        if cam and hasattr(worker, "alias"):
+                            worker.alias = cam.alias
 
             protocols = payload.get("protocols")
             if protocols:
@@ -384,14 +649,18 @@ class TacticalHttpHandler(SimpleHTTPRequestHandler):
                             if cam.url_address == k or cam.ip == k or cam.cam_id == k:
                                 cam.protocol = p.lower()
                                 cam.resolution = "1280x720" if cam.protocol == "rtsp" else "1920x1080"
+
+            drivers = payload.get("camera_drivers")
+            if isinstance(drivers, dict):
+                if "camera_drivers" not in app_config:
+                    app_config["camera_drivers"] = {}
+                app_config["camera_drivers"].update(drivers)
                 if vcam_manager:
-                    for k, p in protocols.items():
-                        is_c2 = ("2" in k) or ("171" in k)
-                        slot = "vcam_2" if is_c2 else "vcam_1"
-                        target_w, target_h = (1280, 720) if p.lower() == "rtsp" else (1920, 1080)
-                        vcam_manager.update_device_resolution(slot, target_w, target_h)
+                    vcam_manager.update_driver_mapping(app_config["camera_drivers"], app_config.get("camera_protocols", {}))
 
             save_config(app_config)
+            if discovery_daemon:
+                discovery_daemon.set_scanning_active(False)
             self._send_json({"success": True, "config": app_config})
             return
 
@@ -442,25 +711,17 @@ def kill_orphan_instances():
     # 1. Liberar puerto 8765 si está retenido por un proceso previo o zombie
     port_pid = find_pid_by_port(8765)
     if port_pid and port_pid != my_pid:
-        print(f"[STARTUP] Detectado puerto 8765 retenido por proceso zombie (PID: {port_pid}). Liberando...", flush=True)
-        kill_process_by_pid(port_pid)
-        time.sleep(0.3)
+        print(f"[STARTUP] Detectado puerto 8765 retenido por proceso previo (PID: {port_pid}). Liberando...", flush=True)
+        terminate_process_by_pid_fast(port_pid)
+        time.sleep(0.1)
 
-    # 2. Si se ejecuta como .exe empaquetado, cerrar cualquier otra instancia previa del mismo ejecutable
+    # 2. Si se ejecuta como .exe empaquetado, cerrar de forma instantánea cualquier otra instancia previa
     if getattr(sys, "frozen", False):
         exe_name = os.path.basename(sys.executable)
-        exe_stem = os.path.splitext(exe_name)[0]
-        try:
-            ps_cmd = f"Get-Process -Name '{exe_stem}' -ErrorAction SilentlyContinue | Where-Object {{ $_.Id -ne {my_pid} }} | ForEach-Object {{ $_.Id }}"
-            res = subprocess.check_output(["powershell", "-NoProfile", "-Command", ps_cmd]).decode("ascii", errors="ignore")
-            for p_str in res.split():
-                if p_str.strip().isdigit():
-                    p = int(p_str.strip())
-                    if p != my_pid:
-                        print(f"[STARTUP] Finalizando instancia zombie anterior de {exe_name} (PID: {p})...", flush=True)
-                        kill_process_by_pid(p)
-        except Exception:
-            pass
+        other_pids = [p for p in find_pids_by_name(exe_name) if p != my_pid]
+        for p in other_pids:
+            print(f"[STARTUP] Finalizando instancia anterior de {exe_name} (PID: {p})...", flush=True)
+            terminate_process_by_pid_fast(p)
 
 def start_http_server(base_port: int = 8765) -> tuple:
     global server_instance
@@ -515,13 +776,15 @@ def start_http_server(base_port: int = 8765) -> tuple:
 def main():
     global discovery_daemon, vcam_manager, video_pipeline, webview_window, is_window_pinned
 
-    # 0. Limpiar cualquier instancia zombie previa y asegurar puerto libre (Anti-White-Screen)
+    # 0. Registrar Windows Job Object a nivel de kernel para eliminar automáticamente todo subproceso hijo
+    init_job_object()
+
+    # 1. Limpiar cualquier instancia zombie previa y asegurar puerto libre (Anti-White-Screen)
     kill_orphan_instances()
 
     # Registrar handlers de salida del sistema operativo
     def _sig_handler(sig, frame):
-        cleanup_all(reason=f"signal_{sig}")
-        os._exit(0)
+        force_clean_exit(0)
 
     try:
         signal.signal(signal.SIGINT, _sig_handler)
@@ -592,8 +855,7 @@ def main():
                 return True
 
             def _on_window_closed():
-                cleanup_all(reason="window_closed")
-                os._exit(0)
+                force_clean_exit(0)
 
             webview_window.events.minimized += _on_window_minimized
             webview_window.events.restored += _on_window_restored
@@ -620,11 +882,10 @@ def main():
             pass
 
     # Cleanup upon exit
-    cleanup_all(reason="main_exit")
     print("=" * 65)
     print("NDI Virtual Camera finalizado con exito.")
     print("=" * 65)
-    os._exit(0)
+    force_clean_exit(0)
 
 if __name__ == "__main__":
     main()

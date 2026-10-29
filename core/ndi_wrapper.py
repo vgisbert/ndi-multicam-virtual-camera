@@ -99,6 +99,7 @@ class NDIWrapper:
                         os.add_dll_directory(dll_dir)
                     self.dll = ctypes.CDLL(path)
                     loaded = True
+                    print(f'[OK] Cargada NDI DLL desde: {path}', flush=True)
                     break
                 except Exception as e:
                     print(f"[WARN] Error cargando NDI DLL en {path}: {e}")

@@ -72,6 +72,33 @@ document.addEventListener("DOMContentLoaded", () => {
   fetchCameras();
   fetchThumbnails();
   setupPolling();
+
+  // Escape key to close settings
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      const modal = document.getElementById("modal-settings");
+      if (modal && !modal.classList.contains("hidden")) {
+        closeSettings();
+      }
+    }
+  });
+
+  // Click on modal backdrop to close settings
+  const modal = document.getElementById("modal-settings");
+  if (modal) {
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal) {
+        closeSettings();
+      }
+    });
+  }
+
+  // Close driver dropdowns on click outside
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".driver-select-btn") && !e.target.closest(".driver-dropdown")) {
+      document.querySelectorAll(".driver-dropdown").forEach(d => d.classList.add("hidden"));
+    }
+  });
 });
 
 async function fetchStatus() {
@@ -110,40 +137,17 @@ async function fetchThumbnails() {
   }
 }
 
-const DEFAULT_NAMES = [
-  "Cám 1",
-  "Cam 1",
-  "Cám 2",
-  "Cam 2",
-  "Cámara 1 - Frontal",
-  "Camera 1 - Front",
-  "Cámara 2 - Lateral",
-  "Camera 2 - Side",
-  "Cámara 108",
-  "Camera 108",
-  "Cámara 171",
-  "Camera 171",
-  "Nuroum V403",
-  "HAMEDAL-V403 (Channel 1)",
-  "HAMEDAL-V403-2 (Channel 1)",
-  "LOCALHOST (Nuroum Cam V403-)",
-  ""
-];
-
 function isCustomAlias(alias) {
-  if (!alias || typeof alias !== "string") return false;
-  const s = alias.trim();
-  if (!s) return false;
-  return DEFAULT_NAMES.indexOf(s) === -1;
+  return !!(alias && typeof alias === "string" && alias.trim());
 }
 
 function getLocalizedAlias(cam) {
   if (!cam) return "";
-  // 1. Si el usuario definió un alias personalizado, siempre tiene máxima prioridad
-  if (isCustomAlias(cam.alias)) {
-    return cam.alias;
+  // 1. Si existe un alias definido (no vacío), respetarlo siempre con máxima prioridad
+  if (cam.alias && typeof cam.alias === "string" && cam.alias.trim()) {
+    return cam.alias.trim();
   }
-  // 2. Si no es personalizado, mostrar el nombre por defecto según idioma e IP
+  // 2. Si no hay alias, mostrar el nombre por defecto según idioma e IP
   const ip = cam.ip || "";
   const url = cam.url_address || "";
   if (ip === "192.168.9.108" || url.includes("192.168.9.108")) {
@@ -152,7 +156,7 @@ function getLocalizedAlias(cam) {
   if (ip === "192.168.9.171" || url.includes("192.168.9.171")) {
     return t("cam_default_2");
   }
-  return cam.alias || `Cámara ${cam.ip}`;
+  return `Cámara ${cam.ip || ""}`;
 }
 
 function renderStatus(status) {
@@ -613,10 +617,155 @@ async function browseRecordingDir() {
   }
 }
 
+let availableDriversList = ["NDI Camara 1", "NDI Camara 2", "OBS Virtual Camera"];
+
+function toggleDriverDropdown(event, camId) {
+  event.stopPropagation();
+  const dropdown = document.getElementById(`driver-dropdown-${camId}`);
+  if (!dropdown) return;
+
+  const wasOpen = !dropdown.classList.contains("hidden");
+  document.querySelectorAll(".driver-dropdown").forEach(d => d.classList.add("hidden"));
+
+  if (wasOpen) return;
+
+  const thisBtn = document.querySelector(`.driver-select-btn[data-cam-id="${camId}"]`);
+  const currentDriver = thisBtn ? thisBtn.getAttribute("data-driver") : "";
+
+  const options = [...availableDriversList];
+  if (!options.includes("(Ninguno)")) {
+    options.push("(Ninguno)");
+  }
+
+  dropdown.innerHTML = "";
+  
+  const header = document.createElement("div");
+  header.className = "px-1.5 py-0.5 text-[7px] text-txt-muted uppercase font-bold tracking-wider border-b border-border-tac/30 mb-0.5";
+  header.textContent = t("settings_driver_select_title") || "Seleccionar Driver DirectShow";
+  dropdown.appendChild(header);
+
+  options.forEach(opt => {
+    const isCurrent = (opt === currentDriver);
+    
+    let assignedAlias = null;
+    document.querySelectorAll(".driver-select-btn").forEach(otherBtn => {
+      if (otherBtn.getAttribute("data-cam-id") !== camId && otherBtn.getAttribute("data-driver") === opt && opt !== "(Ninguno)") {
+        const otherRow = otherBtn.closest(".bg-surface-lowest\\/50");
+        const input = otherRow ? otherRow.querySelector(".alias-input") : null;
+        assignedAlias = input ? input.value : "Otra Cám";
+      }
+    });
+
+    const optBtn = document.createElement("button");
+    optBtn.type = "button";
+    optBtn.className = "px-2 py-1 text-left rounded text-[8.5px] font-mono hover:bg-surface-high flex items-center justify-between text-txt-main transition-colors cursor-pointer w-full";
+    optBtn.innerHTML = `
+      <div class="flex items-center gap-1.5 min-w-0">
+        <span class="material-symbols-outlined text-[12px] ${isCurrent ? 'text-cyan-tac' : 'text-transparent'}">check</span>
+        <span class="${isCurrent ? 'text-cyan-tac font-bold' : ''} truncate">${opt}</span>
+      </div>
+      ${assignedAlias ? `<span class="text-[7.5px] text-amber-tac bg-amber-dim/30 px-1 py-0.2 rounded border border-amber-tac/30 font-sans ml-1.5 shrink-0 flex items-center gap-0.5" title="${t('settings_driver_swap_hint')} ${assignedAlias}"><span class="material-symbols-outlined text-[10px]">swap_horiz</span> ${assignedAlias}</span>` : ''}
+    `;
+
+    optBtn.onclick = (e) => {
+      e.stopPropagation();
+      selectCameraDriver(camId, opt);
+    };
+
+    dropdown.appendChild(optBtn);
+  });
+
+  dropdown.classList.remove("hidden");
+}
+
+function selectCameraDriver(camId, newDriver) {
+  const thisBtn = document.querySelector(`.driver-select-btn[data-cam-id="${camId}"]`);
+  if (!thisBtn) return;
+
+  const oldDriver = thisBtn.getAttribute("data-driver");
+  if (oldDriver === newDriver) {
+    document.querySelectorAll(".driver-dropdown").forEach(d => d.classList.add("hidden"));
+    return;
+  }
+
+  // Previamente si el driver seleccionado estaba asociado a otra cámara lo intercambia por el actual
+  let otherBtnToSwap = null;
+  if (newDriver !== "(Ninguno)") {
+    document.querySelectorAll(".driver-select-btn").forEach(otherBtn => {
+      if (otherBtn.getAttribute("data-cam-id") !== camId && otherBtn.getAttribute("data-driver") === newDriver) {
+        otherBtnToSwap = otherBtn;
+      }
+    });
+  }
+
+  if (otherBtnToSwap) {
+    // Intercambiar (SWAP): La otra cámara pasa a tener el driver previo de esta
+    otherBtnToSwap.setAttribute("data-driver", oldDriver);
+    const otherLabel = otherBtnToSwap.querySelector(".driver-btn-label");
+    if (otherLabel) otherLabel.textContent = oldDriver;
+
+    // Resaltar visualmente el intercambio
+    otherBtnToSwap.classList.add("ring-1", "ring-amber-tac", "bg-amber-dim/60");
+    setTimeout(() => {
+      otherBtnToSwap.classList.remove("ring-1", "ring-amber-tac", "bg-amber-dim/60");
+    }, 700);
+  }
+
+  // Asignar el nuevo driver a esta cámara (liberando el anterior si estaba libre)
+  thisBtn.setAttribute("data-driver", newDriver);
+  const thisLabel = thisBtn.querySelector(".driver-btn-label");
+  if (thisLabel) thisLabel.textContent = newDriver;
+
+  thisBtn.classList.add("ring-1", "ring-cyan-tac", "bg-cyan-dim/80");
+  setTimeout(() => {
+    thisBtn.classList.remove("ring-1", "ring-cyan-tac", "bg-cyan-dim/80");
+  }, 700);
+
+  document.querySelectorAll(".driver-dropdown").forEach(d => d.classList.add("hidden"));
+
+  // Notificar al backend la nueva asignación para que sea inmediata y en caliente
+  const updatedDrivers = {};
+  document.querySelectorAll(".driver-select-btn").forEach(b => {
+    const cId = b.getAttribute("data-cam-id");
+    const drv = b.getAttribute("data-driver");
+    if (cId && drv) {
+      updatedDrivers[cId] = drv;
+      const cam = currentCameras.find(c => c.cam_id === cId);
+      if (cam) {
+        updatedDrivers[cam.ip] = drv;
+        updatedDrivers[cam.url_address] = drv;
+        cam.vcam_driver = drv;
+      }
+    }
+  });
+
+  fetch("/api/drivers/reassign", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ camera_drivers: updatedDrivers })
+  }).then(r => r.json()).then(data => {
+    if (data && data.success) {
+      console.log("[VCAM] Drivers reasignados en caliente:", updatedDrivers);
+    }
+  }).catch(e => {
+    console.warn("[VCAM] Error al reasignar drivers:", e);
+  });
+}
+
 function openSettings() {
   const modal = document.getElementById("modal-settings");
   if (!modal) return;
   modal.classList.remove("hidden");
+
+  // Iniciar búsqueda activa en la red (NDI/ARP) únicamente durante la configuración
+  fetch("/api/discovery/start", { method: "POST" }).catch(() => {});
+
+  // Obtener lista actualizada de drivers DirectShow disponibles
+  fetch("/api/drivers").then(r => r.json()).then(data => {
+    if (data && data.drivers && data.drivers.length > 0) {
+      availableDriversList = data.drivers;
+    }
+  }).catch(() => {});
 
   // Populate fields
   fetch("/api/config").then(r => r.json()).then(cfg => {
@@ -649,13 +798,16 @@ function openSettings() {
 
         // Driver virtual por el que sale esta cámara
         let driverName = cam.vcam_driver;
+        if (!driverName || driverName === "Desactivado") {
+          driverName = cfg.camera_drivers?.[cam.cam_id] || cfg.camera_drivers?.[cam.ip];
+        }
         if (!driverName) {
           const isCam2 = (cam.alias && cam.alias.includes("2")) || (cam.ip && cam.ip.endsWith(".171")) || (cam.cam_id && cam.cam_id.includes("2"));
           driverName = isCam2 ? "NDI Camara 2" : "NDI Camara 1";
         }
 
         row.innerHTML = `
-          <!-- Fila superior: IP y Driver Virtual de Salida DirectShow -->
+          <!-- Fila superior: IP y Driver Virtual de Salida DirectShow Reasignable -->
           <div class="flex items-center justify-between pb-1 border-b border-border-tac/20">
             <div class="flex items-center gap-1.5">
               <span class="w-1.5 h-1.5 rounded-full bg-cyan-tac shadow-[0_0_4px_#00f0ff]"></span>
@@ -664,9 +816,18 @@ function openSettings() {
             <div class="flex items-center gap-1">
               <span class="material-symbols-outlined text-[12px] text-cyan-tac">videocam</span>
               <span class="text-[7.5px] uppercase tracking-wider text-txt-muted font-bold">${t("settings_driver_output")}:</span>
-              <span class="px-1.5 py-0.2 rounded font-mono font-bold text-[8px] bg-cyan-dim/40 border border-cyan-tac/50 text-cyan-tac">
-                ${driverName} · ${isRtsp ? '720p' : '1080p'}
-              </span>
+              <div class="relative">
+                <button type="button" 
+                        data-cam-id="${cam.cam_id}" 
+                        data-driver="${driverName}" 
+                        onclick="toggleDriverDropdown(event, '${cam.cam_id}')" 
+                        class="driver-select-btn px-1.5 py-0.5 rounded font-mono font-bold text-[8px] bg-cyan-dim/40 hover:bg-cyan-dim/70 border border-cyan-tac/50 hover:border-cyan-tac text-cyan-tac flex items-center gap-1 cursor-pointer transition-all active:scale-95 shadow-xs" 
+                        title="Clic para reasignar driver DirectShow">
+                  <span class="driver-btn-label">${driverName}</span>
+                  <span class="material-symbols-outlined text-[10px] opacity-70">arrow_drop_down</span>
+                </button>
+                <div id="driver-dropdown-${cam.cam_id}" class="driver-dropdown hidden absolute right-0 top-full mt-1 z-50 bg-surface-low border border-border-tac rounded shadow-2xl p-1 min-w-[170px] flex flex-col gap-0.5"></div>
+              </div>
             </div>
           </div>
 
@@ -704,6 +865,10 @@ function closeSettings() {
   const errBox = document.getElementById("cfg-aliases-error");
   if (errBox) errBox.classList.add("hidden");
   document.querySelectorAll(".alias-input").forEach(i => i.classList.remove("border-red-tac", "bg-red-dim/20"));
+  document.querySelectorAll(".driver-dropdown").forEach(d => d.classList.add("hidden"));
+
+  // Detener búsqueda activa en la red al regresar a la ventana principal
+  fetch("/api/discovery/stop", { method: "POST" }).catch(() => {});
 }
 
 async function saveAndCloseSettings() {
@@ -740,12 +905,27 @@ async function saveAndCloseSettings() {
     const camId = input.getAttribute("data-cam-id");
     const val = input.value.trim();
     if (camId) {
-      const cam = currentCameras.find(c => c.cam_id === camId);
-      if (cam) {
-        aliases[cam.url_address] = val;
-        aliases[cam.ip] = val;
-        aliases[cam.cam_id] = val;
+      const matchingCams = (currentCameras || []).filter(c => c.cam_id === camId || (c.ip && c.ip === camId));
+      matchingCams.forEach(cam => {
+        if (cam.url_address) aliases[cam.url_address] = val;
+        if (cam.ip) aliases[cam.ip] = val;
+        if (cam.cam_id) aliases[cam.cam_id] = val;
         cam.alias = val;
+      });
+      const targetCam = matchingCams[0] || (currentCameras || []).find(c => c.cam_id === camId);
+      if (targetCam) {
+        if (!matchingCams.length) {
+          if (targetCam.url_address) aliases[targetCam.url_address] = val;
+          if (targetCam.ip) aliases[targetCam.ip] = val;
+          if (targetCam.cam_id) aliases[targetCam.cam_id] = val;
+          targetCam.alias = val;
+        }
+        const card = document.getElementById(`card-${targetCam.cam_id}`) ||
+                     document.querySelector(`.camera-card[data-ip="${targetCam.ip}"]`);
+        if (card) {
+          const aliasEl = card.querySelector(".cam-alias");
+          if (aliasEl) aliasEl.textContent = val || getLocalizedAlias(targetCam);
+        }
       }
     }
   });
@@ -765,6 +945,21 @@ async function saveAndCloseSettings() {
     }
   });
 
+  const drivers = {};
+  document.querySelectorAll(".driver-select-btn").forEach(b => {
+    const cId = b.getAttribute("data-cam-id");
+    const drv = b.getAttribute("data-driver");
+    if (cId && drv) {
+      drivers[cId] = drv;
+      const cam = currentCameras.find(c => c.cam_id === cId);
+      if (cam) {
+        drivers[cam.ip] = drv;
+        drivers[cam.url_address] = drv;
+        cam.vcam_driver = drv;
+      }
+    }
+  });
+
   const previewFpsEl = document.getElementById("cfg-preview-fps");
   const previewFps = previewFpsEl ? parseInt(previewFpsEl.value, 10) : 4;
   const recDirEl = document.getElementById("cfg-recording-dir");
@@ -773,6 +968,7 @@ async function saveAndCloseSettings() {
   const payload = {
     aliases: aliases,
     protocols: protocols,
+    camera_drivers: drivers,
     preview_fps: previewFps,
     recording_dir: recDir
   };

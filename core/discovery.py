@@ -11,8 +11,17 @@ import threading
 from typing import Dict, List, Optional, Callable
 from ndi_wrapper import get_ndi
 
+_MAC_CACHE: Dict[str, str] = {}
+
 def resolve_mac_address(ip_str: str) -> str:
-    """Resolves physical MAC address using Windows SendARP API."""
+    """Resolves physical MAC address using Windows SendARP API, cached per IP to avoid flooding."""
+    if not ip_str:
+        return "02:00:00:00:00:01"
+    
+    cached = _MAC_CACHE.get(ip_str)
+    if cached and not cached.startswith("02:00:"):
+        return cached
+
     try:
         ip_packed = socket.inet_aton(ip_str)
         dest_ip = struct.unpack("!I", ip_packed)[0]
@@ -24,6 +33,7 @@ def resolve_mac_address(ip_str: str) -> str:
         if res == 0:
             mac_str = ":".join(f"{b & 0xFF:02X}" for b in mac_bytes)
             if mac_str != "00:00:00:00:00:00":
+                _MAC_CACHE[ip_str] = mac_str
                 return mac_str
     except Exception:
         pass
@@ -31,7 +41,10 @@ def resolve_mac_address(ip_str: str) -> str:
     # Fallback synthetic MAC based on IP
     try:
         octets = [int(x) for x in ip_str.split(".")]
-        return f"02:00:{octets[0]:02X}:{octets[1]:02X}:{octets[2]:02X}:{octets[3]:02X}"
+        synthetic = f"02:00:{octets[0]:02X}:{octets[1]:02X}:{octets[2]:02X}:{octets[3]:02X}"
+        if ip_str not in _MAC_CACHE:
+            _MAC_CACHE[ip_str] = synthetic
+        return synthetic
     except Exception:
         return "02:00:00:00:00:01"
 
@@ -90,17 +103,46 @@ class CameraDiscoveryDaemon:
         self.config = config
         self.on_cameras_updated = on_cameras_updated
         self.cameras: Dict[str, CameraModel] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._finder = None
+        self._scanning_active = False
+        self._scan_event = threading.Event()
+        self._startup_scan_until = 0.0
+        self._was_scanning = False
+
+    def set_scanning_active(self, active: bool):
+        """Activa o detiene la búsqueda activa en la red (NDI get_sources, ARP SendARP, sondeo TCP)."""
+        with self._lock:
+            self._scanning_active = active
+            if active:
+                self._scan_event.set()
+                print("[DISCOVERY] Búsqueda activa en red ACTIVADA (Ventana de configuración abierta).", flush=True)
+            else:
+                self._scan_event.clear()
+                print("[DISCOVERY] Búsqueda activa en red DETENIDA (Ventana principal en reposo).", flush=True)
+
+    def is_scanning(self) -> bool:
+        return self._scanning_active or (time.time() < self._startup_scan_until)
 
     def start(self):
         if self._running:
             return
         self._running = True
 
-        extra_ips = self.config.get("network", {}).get("ndi_extra_ips", [])
+        # Extraer IPs candidatas configuradas o inferidas de alias/protocolos
+        extra_ips = list(self.config.get("network", {}).get("ndi_extra_ips", []))
+        if not extra_ips:
+            extracted = set()
+            for key in list(self.config.get("camera_aliases", {}).keys()) + list(self.config.get("camera_protocols", {}).keys()):
+                ip = key.split(":")[0] if ":" in key else key
+                if ip.replace(".", "").isdigit() and ip.count(".") == 3:
+                    extracted.add(ip)
+            if extracted:
+                extra_ips = sorted(list(extracted))
+            else:
+                extra_ips = ["192.168.9.108", "192.168.9.171"]
         
         # Pre-seed configured cameras so they appear in UI even before NDI responds
         aliases = self.config.get("camera_aliases", {})
@@ -143,16 +185,36 @@ class CameraDiscoveryDaemon:
         ndi = get_ndi()
         self._finder = ndi.create_finder(extra_ips)
 
+        # Activar búsqueda en red durante los primeros 8 segundos de arranque
+        self._startup_scan_until = time.time() + 8.0
+        self._scanning_active = False
+        self._was_scanning = True
+        self._scan_event.set()
+
         self._thread = threading.Thread(target=self._scan_loop, daemon=True, name="NDIDiscoveryThread")
         self._thread.start()
-        print("[OK] Demonio de autodescubrimiento NDI y sondeo de red iniciado.")
+        print(f"[OK] Demonio de autodescubrimiento NDI iniciado (fase arranque activa, extra_ips={extra_ips}).", flush=True)
 
     def _scan_loop(self):
         ndi = get_ndi()
         while self._running:
+            now = time.time()
+            in_startup = (now < self._startup_scan_until)
+            should_scan = self._scanning_active or in_startup
+
+            if not should_scan:
+                if self._was_scanning:
+                    self._was_scanning = False
+                    print("[DISCOVERY] Fase de búsqueda finalizada. Red en reposo (cero ARP / cero sondeo en ventana principal).", flush=True)
+                self._scan_event.wait(timeout=1.0)
+                continue
+
+            self._was_scanning = True
             try:
                 # 1. Query NDI Finder sources
                 discovered = ndi.get_sources(self._finder, wait_ms=400)
+                if discovered:
+                    print(f"[DISCOVERY] NDI fuentes descubiertas ({len(discovered)}): {[s.get('url_address') for s in discovered]}", flush=True)
                 
                 # 2. Probe each discovered source and preconfigured extra_ips
                 with self._lock:
@@ -220,7 +282,7 @@ class CameraDiscoveryDaemon:
                                 cam.latency_ms = rtsp_lat
                                 cam.last_seen = now
                             else:
-                                if now - cam.last_seen > 2.5:
+                                if now - cam.last_seen > 3.0:
                                     cam.is_online = False
                                     cam.latency_ms = 0.0
 
@@ -233,7 +295,7 @@ class CameraDiscoveryDaemon:
             except Exception as e:
                 print(f"[WARN] Error en ciclo de escaneo NDI: {e}")
 
-            time.sleep(1.0)
+            time.sleep(1.5)
 
     def get_all_cameras(self) -> List[dict]:
         with self._lock:
@@ -326,6 +388,7 @@ class CameraDiscoveryDaemon:
 
     def stop(self):
         self._running = False
+        self._scan_event.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
         if self._finder:
