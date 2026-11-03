@@ -157,7 +157,9 @@ class SingleCameraRecorder:
         self.fps = fps if fps > 0 else 30.0
 
         self.frames_written = 0
+        self.dropped_frames = 0
         self.bytes_written = 0
+        self.started_at = 0.0
         self.is_active = False
         
         self._queue: queue.Queue = queue.Queue(maxsize=60)
@@ -206,9 +208,11 @@ class SingleCameraRecorder:
                 bufsize=10 * 1024 * 1024
             )
             self.is_active = True
+            self.started_at = time.time()
             self._thread = threading.Thread(target=self._writer_loop, daemon=True, name=f"Recorder-{self.cam_id}")
             self._thread.start()
             print(f"[RECORDER] Grabación iniciada para '{self.alias}' -> {os.path.basename(self.output_path)} [{name}]", flush=True)
+            log_camera(f"grabación iniciada para '{self.alias}' -> {os.path.basename(self.output_path)} ({self.width}x{self.height} @ {rec_fps} FPS, codificador: {name})")
             return True
         except Exception as e:
             print(f"[ERROR] No se pudo iniciar FFmpeg para {self.output_path}: {e}", flush=True)
@@ -223,7 +227,13 @@ class SingleCameraRecorder:
             # Non-blocking put; if queue is full, drop frame for recording to protect live streaming
             self._queue.put_nowait(frame_bgr)
         except queue.Full:
-            pass
+            self.dropped_frames += 1
+            if self.dropped_frames == 1 or self.dropped_frames % 50 == 0:
+                log_camera(
+                    f"aviso de grabación en '{self.alias}': cola FFmpeg llena ({self.dropped_frames} fotogramas descartados por sobrecarga de disco/CPU)",
+                    key=f"rec_drop_{self.cam_id}",
+                    min_interval_s=15.0
+                )
 
     def _writer_loop(self):
         while self.is_active:
@@ -266,7 +276,12 @@ class SingleCameraRecorder:
                     pass
             self._process = None
 
-        print(f"[RECORDER] Grabación finalizada: {os.path.basename(self.output_path)} ({self.frames_written} frames)", flush=True)
+        elapsed_s = max(0.1, time.time() - self.started_at) if self.started_at > 0 else 0.1
+        eff_fps = self.frames_written / elapsed_s
+        print(f"[RECORDER] Grabación finalizada: {os.path.basename(self.output_path)} ({self.frames_written} frames, {self.dropped_frames} descartados, {eff_fps:.1f} FPS efectivos)", flush=True)
+        log_camera(
+            f"grabación finalizada: {os.path.basename(self.output_path)} ({self.frames_written} fotogramas escritos en {elapsed_s:.1f}s = {eff_fps:.1f} FPS reales, descartados en cola={self.dropped_frames})"
+        )
         return self.output_path
 
 

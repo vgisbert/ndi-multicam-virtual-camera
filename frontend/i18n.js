@@ -54,6 +54,10 @@ const I18N_LOCALES = {
 
     // Modal de Configuración
     settings_title: "CONFIGURACIÓN NDI VIRTUAL CAM",
+    settings_vcam_switch_title: "Drivers Virtuales DirectShow (OBS / Zoom)",
+    settings_vcam_switch_hint: "Desactivar si solo se usa esta ventana y el Joystick PTZ (Ahorro ~85% CPU)",
+    settings_vcam_on: "ACTIVO",
+    settings_vcam_off: "OFF (ECO)",
     settings_vcam_name: "Nombre del dispositivo virtual",
     settings_aliases_title: "Alias de Cámaras Detectadas",
     settings_driver_output: "Driver DirectShow",
@@ -138,6 +142,10 @@ const I18N_LOCALES = {
 
     // Settings Modal
     settings_title: "NDI VIRTUAL CAM SETTINGS",
+    settings_vcam_switch_title: "DirectShow Virtual Drivers (OBS / Zoom)",
+    settings_vcam_switch_hint: "Disable if only using this preview & PTZ Joystick (Saves ~85% CPU)",
+    settings_vcam_on: "ACTIVE",
+    settings_vcam_off: "OFF (ECO)",
     settings_vcam_name: "Virtual device display name",
     settings_aliases_title: "Camera Friendly Aliases",
     settings_driver_output: "DirectShow Driver Output",
@@ -220,6 +228,10 @@ function applyI18n() {
 
   if (typeof updateMonitoringUI === "function" && typeof isMonitoringEnabled !== "undefined") {
     updateMonitoringUI(isMonitoringEnabled);
+  }
+  const vcamSwitchEl = document.getElementById("cfg-vcam-switch");
+  if (vcamSwitchEl && typeof renderSettingsVcamSwitch === "function") {
+    renderSettingsVcamSwitch(vcamSwitchEl.getAttribute("data-enabled") !== "false");
   }
 }
 

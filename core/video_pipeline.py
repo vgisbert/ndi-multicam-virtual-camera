@@ -86,9 +86,13 @@ class CameraStreamWorker:
         fps_frame_count = 0
         fps_timer = 0.0
         warmup_frames = 5
+        net_wait_accum_ms = 0.0
+        pc_proc_accum_ms = 0.0
 
         while self._running and self._cap and self._cap.isOpened():
+            t_cap0 = time.perf_counter()
             ret, bgr_img = self._cap.read()
+            t_cap1 = time.perf_counter()
             if not ret or bgr_img is None:
                 if time.time() - last_frame_ok > 8.0:
                     log_camera(f"sin recepción de fotogramas RTSP en cámara: {self.ip} ({self.alias})", key=f"rtsp_stall_{self.ip}", min_interval_s=60.0)
@@ -101,13 +105,16 @@ class CameraStreamWorker:
                 warmup_frames -= 1
                 fps_timer = now
                 fps_frame_count = 0
+                net_wait_accum_ms = 0.0
+                pc_proc_accum_ms = 0.0
 
             h, w = bgr_img.shape[:2]
             self.resolution = f"{w}x{h}"
             fps_frame_count += 1
+            net_wait_accum_ms += (t_cap1 - t_cap0) * 1000.0
 
-            # 1. Salida DirectShow hacia cámara virtual
-            if self.vcam:
+            # 1. Salida DirectShow hacia cámara virtual (solo si está habilitada)
+            if self.vcam and self.vcam.is_camera_output_enabled(channel_id=self.cam_id, source_label=f"{self.alias} ({self.ip})", ip=self.ip):
                 self.vcam.push_frame(self.cam_id, bgr_img, source_label=f"{self.alias} ({self.ip}) [RTSP]")
 
             # 2. Grabador MKV
@@ -129,6 +136,8 @@ class CameraStreamWorker:
                     with self._lock:
                         self.latest_thumbnail_b64 = None
 
+            pc_proc_accum_ms += (time.perf_counter() - t_cap1) * 1000.0
+
             # Medidor de FPS continuo con ventana de 1.0s y normalización broadcast
             elapsed = now - fps_timer
             if elapsed >= 1.0:
@@ -139,7 +148,18 @@ class CameraStreamWorker:
                         self.measured_fps = calc_fps
                         if self.on_fps_update:
                             self.on_fps_update(self.cam_id, self.measured_fps, self.resolution)
+                    if warmup_frames == 0 and 0.1 < calc_fps < 15.0:
+                        avg_net = net_wait_accum_ms / max(1, fps_frame_count)
+                        avg_proc = pc_proc_accum_ms / max(1, fps_frame_count)
+                        causa = "SATURACIÓN CPU DEL PC" if avg_proc > 20.0 else ("RED / CÁMARA LENTA" if avg_net > 50.0 else "CONTENCIÓN SISTEMA / RED")
+                        log_camera(
+                            f"rendimiento bajo RTSP en cámara {self.ip} ({self.alias}): {calc_fps} FPS [espera red={avg_net:.1f}ms, proceso PC={avg_proc:.1f}ms -> causa probable: {causa}]",
+                            key=f"low_fps_rtsp_{self.ip}",
+                            min_interval_s=30.0
+                        )
                 fps_frame_count = 0
+                net_wait_accum_ms = 0.0
+                pc_proc_accum_ms = 0.0
                 fps_timer = now
 
         if self._cap:
@@ -174,9 +194,14 @@ class CameraStreamWorker:
         fps_frame_count = 0
         fps_timer = 0.0
         warmup_frames = 5
+        net_wait_accum_ms = 0.0
+        pc_proc_accum_ms = 0.0
+        timeout_count = 0
 
         while self._running and self._receiver:
+            t_cap0 = time.perf_counter()
             frame_type, video_frame = ndi.capture_frame(self._receiver, timeout_ms=35)
+            t_cap1 = time.perf_counter()
             if frame_type == NDILIB_FRAME_TYPE_VIDEO and video_frame:
                 try:
                     now = time.time()
@@ -185,46 +210,66 @@ class CameraStreamWorker:
                         warmup_frames -= 1
                         fps_timer = now
                         fps_frame_count = 0
+                        net_wait_accum_ms = 0.0
+                        pc_proc_accum_ms = 0.0
+                        timeout_count = 0
 
                     w = video_frame.xres
                     h = video_frame.yres
-                    stride = video_frame.line_stride_in_bytes
-                    buf_size = stride * h
-                    raw_bytes = ctypes.string_at(video_frame.p_data, buf_size)
-                    arr = np.frombuffer(raw_bytes, dtype=np.uint8).reshape((h, stride // 4, 4))
-                    bgr_img = arr[:h, :w, :3].copy()
-                    
                     self.resolution = f"{w}x{h}"
                     fps_frame_count += 1
+                    net_wait_accum_ms += (t_cap1 - t_cap0) * 1000.0
 
-                    # 1. Push directly to its dedicated Virtual Camera device (always operational)
-                    if self.vcam:
-                        self.vcam.push_frame(self.cam_id, bgr_img, source_label=f"{self.alias} ({self.ip})")
+                    # Evaluar qué consumidores necesitan realmente que convirtamos este fotograma a BGR en Python
+                    need_vcam = bool(
+                        self.vcam and self.vcam.is_camera_output_enabled(
+                            channel_id=self.cam_id,
+                            source_label=f"{self.alias} ({self.ip})",
+                            ip=self.ip
+                        )
+                    )
+                    need_rec = bool(self.recorder_manager and self.recorder_manager.is_recording)
+                    target_delay = 1.0 / max(1.0, float(self.thumb_fps))
+                    need_thumb = bool(self.monitoring_enabled and (now - last_thumb_time >= target_delay))
 
-                    # 2. Push to dual MKV recorder if active
-                    if self.recorder_manager and self.recorder_manager.is_recording:
-                        self.recorder_manager.push_frame(self.cam_id, bgr_img)
+                    if not self.monitoring_enabled and self.latest_thumbnail_b64 is not None:
+                        with self._lock:
+                            self.latest_thumbnail_b64 = None
 
-                    # 3. Update UI thumbnail only if monitoring is enabled
-                    if self.monitoring_enabled:
-                        target_delay = 1.0 / max(1.0, float(self.thumb_fps))
-                        if now - last_thumb_time >= target_delay:
+                    # Zero-Copy Fast-Discard: si este fotograma no va a DirectShow, ni a grabación MKV,
+                    # ni toca refrescar la miniatura de la UI, se libera directamente en C sin copiar 14.5 MB a Python.
+                    if need_vcam or need_rec or need_thumb:
+                        stride = video_frame.line_stride_in_bytes
+                        buf_size = stride * h
+                        raw_bytes = ctypes.string_at(video_frame.p_data, buf_size)
+                        arr = np.frombuffer(raw_bytes, dtype=np.uint8).reshape((h, stride // 4, 4))
+                        bgr_img = arr[:h, :w, :3].copy()
+
+                        # 1. Push directly to its dedicated Virtual Camera device (if enabled)
+                        if need_vcam:
+                            self.vcam.push_frame(self.cam_id, bgr_img, source_label=f"{self.alias} ({self.ip})")
+
+                        # 2. Push to dual MKV recorder if active
+                        if need_rec:
+                            self.recorder_manager.push_frame(self.cam_id, bgr_img)
+
+                        # 3. Update UI thumbnail only when due
+                        if need_thumb:
                             last_thumb_time = now
                             thumb = cv2.resize(bgr_img, (280, 158), interpolation=cv2.INTER_LINEAR)
                             _, enc = cv2.imencode('.jpg', thumb, [cv2.IMWRITE_JPEG_QUALITY, 65])
                             b64 = base64.b64encode(enc.tobytes()).decode('ascii')
                             with self._lock:
                                 self.latest_thumbnail_b64 = f"data:image/jpeg;base64,{b64}"
-                    else:
-                        if self.latest_thumbnail_b64 is not None:
-                            with self._lock:
-                                self.latest_thumbnail_b64 = None
+
+                    pc_proc_accum_ms += (time.perf_counter() - t_cap1) * 1000.0
 
                 except Exception as e:
                     log_camera(f"error procesando fotograma NDI de cámara {self.ip}: {e}", key=f"ndi_frame_err_{self.ip}", min_interval_s=30.0)
                 finally:
                     ndi.free_frame(self._receiver, video_frame)
             else:
+                timeout_count += 1
                 if frame_type == NDILIB_FRAME_TYPE_ERROR:
                     log_camera(f"error en trama de red NDI de cámara: {self.ip} ({self.alias})", key=f"ndi_net_err_{self.ip}", min_interval_s=30.0)
                 elif time.time() - last_frame_ok > 8.0:
@@ -243,7 +288,24 @@ class CameraStreamWorker:
                             self.measured_fps = calc_fps
                             if self.on_fps_update:
                                 self.on_fps_update(self.cam_id, self.measured_fps, self.resolution)
+                        if warmup_frames == 0 and 0.1 < calc_fps < 15.0:
+                            avg_net = net_wait_accum_ms / max(1, fps_frame_count)
+                            avg_proc = pc_proc_accum_ms / max(1, fps_frame_count)
+                            if avg_proc > 18.0:
+                                causa = "SATURACIÓN CPU DEL PC"
+                            elif timeout_count >= 8 or avg_net > 32.0:
+                                causa = "RED LENTA / CÁMARA SIN ENTREGAR TRAMAS A TIEMPO"
+                            else:
+                                causa = "CONTENCIÓN DE HILOS EN SISTEMA O RED"
+                            log_camera(
+                                f"rendimiento bajo NDI en cámara {self.ip} ({self.alias}): {calc_fps} FPS [espera red={avg_net:.1f}ms, proceso PC={avg_proc:.1f}ms, esperas vacías={timeout_count}/s -> causa probable: {causa}]",
+                                key=f"low_fps_ndi_{self.ip}",
+                                min_interval_s=30.0
+                            )
                     fps_frame_count = 0
+                    net_wait_accum_ms = 0.0
+                    pc_proc_accum_ms = 0.0
+                    timeout_count = 0
                     fps_timer = now
 
         if self._receiver:
@@ -304,10 +366,10 @@ class VideoPipeline:
                 active_ids = set()
                 protocols_cfg = self.discovery.config.get("camera_protocols", {})
 
-                # Ensure virtual camera bridge is operational whenever cameras are online
+                # Ensure virtual camera bridge is operational whenever cameras are online and DirectShow is enabled
                 online_cams = [c for c in all_cams if c.get("is_online")]
-                if online_cams and self.vcam and not self.vcam.is_active:
-                    self.vcam.start_all(online_cams)
+                if online_cams and self.vcam and self.vcam.enabled and not self.vcam.is_active:
+                    self.vcam.start_all(online_cams, config=self.discovery.config)
 
                 for cam in all_cams:
                     c_id = cam["cam_id"]

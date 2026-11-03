@@ -250,10 +250,11 @@ def get_installed_virtual_camera_drivers() -> List[str]:
 
 class VirtualCameraManager:
     """Coordinates one or multiple simultaneous virtual camera devices."""
-    def __init__(self, width: int = 1920, height: int = 1080, fps: int = 25):
+    def __init__(self, width: int = 1920, height: int = 1080, fps: int = 25, enabled: bool = True):
         self.width = width
         self.height = height
         self.fps = fps
+        self.enabled = bool(enabled)
         self.devices: Dict[str, VirtualCameraDevice] = {}
         self.camera_drivers: Dict[str, str] = {}
         self.is_active = False
@@ -320,10 +321,35 @@ class VirtualCameraManager:
 
     def get_output_driver_label(self, channel_id: str = "", alias: str = "", ip: str = "", total_online: int = 1) -> str:
         """Returns the DirectShow virtual camera device name assigned to this camera."""
+        if not self.enabled:
+            return "Desactivado"
         drv = self.get_driver_for_camera(channel_id=channel_id, source_label=f"{alias} {ip}", ip=ip)
         if not drv or drv in ["(Ninguno)", "Desactivado", "none"]:
             return "Desactivado"
         return drv
+
+    def is_camera_output_enabled(self, channel_id: str = "", source_label: str = "", ip: str = "") -> bool:
+        """Returns True only if the global DirectShow bridge is enabled & active AND this camera has an active driver."""
+        if not self.enabled or not self.is_active or not self.devices:
+            return False
+        drv = self.get_driver_for_camera(channel_id=channel_id, source_label=source_label, ip=ip)
+        if not drv or drv in ["(Ninguno)", "Desactivado", "none"]:
+            return False
+        return True
+
+    def set_enabled(self, enabled: bool, camera_list: Optional[List[dict]] = None, config: Optional[dict] = None) -> bool:
+        """Enables or disables the DirectShow Virtual Camera bridge dynamically."""
+        new_state = bool(enabled)
+        self.enabled = new_state
+        if not new_state:
+            self.stop_all()
+            print("[VCAM] Salida DirectShow DESACTIVADA (Modo Ahorro CPU / Zero-Copy).", flush=True)
+            log_camera("salida DirectShow desactivada por configuración (modo ahorro CPU)")
+            return False
+        else:
+            print("[VCAM] Salida DirectShow ACTIVADA.", flush=True)
+            log_camera("salida DirectShow activada por configuración")
+            return self.start_all(camera_list=camera_list, config=config)
 
     def update_device_resolution(self, channel_id: str, width: int, height: int):
         with self._lock:
@@ -337,7 +363,7 @@ class VirtualCameraManager:
                 dev.update_resolution(width, height)
 
     def push_frame(self, channel_id: str, frame_bgr: np.ndarray, source_label: str = ""):
-        if not self.is_active or not self.devices:
+        if not self.enabled or not self.is_active or not self.devices:
             return
 
         drv_name = self.get_driver_for_camera(channel_id=channel_id, source_label=source_label)
@@ -369,11 +395,19 @@ class VirtualCameraManager:
 
     def start_all(self, camera_list: Optional[List[dict]] = None, config: Optional[dict] = None) -> bool:
         """Starts simultaneous virtual camera devices matching camera resolutions."""
+        if config and "vcam_enabled" in config:
+            self.enabled = bool(config["vcam_enabled"])
+        if config and "camera_drivers" in config:
+            self.camera_drivers.update(config["camera_drivers"])
+
+        if not self.enabled:
+            self.stop_all()
+            print("[VCAM] Salida DirectShow desactivada en configuración (Modo Ahorro CPU activo).", flush=True)
+            return False
+
         all_ok = True
         cams = list(camera_list or [])
         protocols_cfg = (config or {}).get("camera_protocols", {})
-        if config and "camera_drivers" in config:
-            self.camera_drivers.update(config["camera_drivers"])
 
         # First check if unitycapture is installed
         unitycapture_ready = False
@@ -448,9 +482,10 @@ class VirtualCameraManager:
             primary_label = statuses[0]["label"] if statuses else "NDI Multicam"
             res = statuses[0].get("resolution", f"{self.width}x{self.height}") if statuses else f"{self.width}x{self.height}"
             return {
+                "enabled": self.enabled,
                 "is_active": self.is_active,
                 "active_devices_count": active_count,
-                "device": f"Multicam ({active_count} dispositivos activos)",
+                "device": f"Multicam ({active_count} dispositivos activos)" if self.enabled else "DirectShow Desactivado (Ahorro CPU)",
                 "resolution": res,
                 "fps": round(fps_avg, 1),
                 "source_label": primary_label,

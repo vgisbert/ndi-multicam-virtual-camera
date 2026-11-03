@@ -1,6 +1,7 @@
 {
   "version": "1.0.0",
   "virtual_camera_name": "NDI Virtual Camera",
+  "vcam_enabled": true,
   "selected_source": "",
   "auto_start_virtual_cam": true,
   "preview_fps": 4,

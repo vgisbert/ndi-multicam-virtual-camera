@@ -42,7 +42,7 @@ ICON_PATH = os.path.join(UI_DIR, "icon.ico")
 if CORE_DIR not in sys.path:
     sys.path.insert(0, CORE_DIR)
 
-from logger import log_camera, install_exception_hooks
+from logger import log_camera, install_exception_hooks, LOG_FILE_PATH
 install_exception_hooks()
 
 from ndi_wrapper import get_ndi
@@ -317,6 +317,7 @@ def load_config():
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 app_config = json.load(f)
+                app_config.setdefault("vcam_enabled", True)
                 return app_config
         except Exception as e:
             print(f"[WARN] Error al leer config_camera.json: {e}")
@@ -325,6 +326,7 @@ def load_config():
         log_camera("no se encontró config_camera.json, aplicando configuración por defecto")
     app_config = {
         "virtual_camera_name": "NDI Virtual Camera",
+        "vcam_enabled": True,
         "selected_source": "",
         "auto_start_virtual_cam": False,
         "resolution": {"width": 1920, "height": 1080, "fps": 25},
@@ -372,12 +374,30 @@ class TacticalHttpHandler(SimpleHTTPRequestHandler):
             data = {
                 "status": "nominal",
                 "vcam": vcam_status,
+                "vcam_enabled": vcam_manager.enabled if vcam_manager else app_config.get("vcam_enabled", True),
                 "is_pinned": is_window_pinned,
                 "monitoring_enabled": video_pipeline.is_monitoring_enabled() if video_pipeline else True,
                 "preview_fps": video_pipeline.preview_fps if video_pipeline else 4,
                 "recording": rec_status
             }
             self._send_json(data)
+            return
+
+        elif path == "/api/log":
+            lines = []
+            if os.path.exists(LOG_FILE_PATH):
+                try:
+                    with open(LOG_FILE_PATH, "r", encoding="utf-8", errors="replace") as lf:
+                        lines = lf.readlines()[-200:]
+                except Exception as e:
+                    lines = [f"Error leyendo camera.log: {e}\n"]
+            content = "".join(lines) if lines else "(camera.log vacío)\n"
+            out = content.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
             return
 
         elif path == "/api/recording/status":
@@ -509,13 +529,22 @@ class TacticalHttpHandler(SimpleHTTPRequestHandler):
 
         elif path == "/api/vcam/toggle":
             if vcam_manager:
-                if vcam_manager.is_active:
-                    vcam_manager.stop_all()
+                if "enabled" in payload:
+                    new_enabled = bool(payload["enabled"])
                 else:
-                    cams = discovery_daemon.get_all_cameras() if discovery_daemon else []
-                    vcam_manager.start_all(cams)
-                self._send_json({"success": True, "is_active": vcam_manager.is_active})
+                    new_enabled = not vcam_manager.enabled
+                app_config["vcam_enabled"] = new_enabled
+                cams = discovery_daemon.get_all_cameras() if discovery_daemon else []
+                vcam_manager.set_enabled(new_enabled, camera_list=cams, config=app_config)
+                save_config(app_config)
+                self._send_json({
+                    "success": True,
+                    "vcam_enabled": vcam_manager.enabled,
+                    "is_active": vcam_manager.is_active
+                })
                 return
+            self._send_json({"success": False, "error": "VCam Manager no disponible"})
+            return
 
         elif path == "/api/pin":
             is_window_pinned = not is_window_pinned
@@ -632,6 +661,7 @@ class TacticalHttpHandler(SimpleHTTPRequestHandler):
 
         elif path == "/api/config":
             vcam_name = payload.get("virtual_camera_name")
+            vcam_enabled = payload.get("vcam_enabled")
             extra_ips = payload.get("extra_ips")
             aliases = payload.get("aliases")
             preview_fps = payload.get("preview_fps")
@@ -713,6 +743,14 @@ class TacticalHttpHandler(SimpleHTTPRequestHandler):
                 app_config["camera_drivers"].update(drivers)
                 if vcam_manager:
                     vcam_manager.update_driver_mapping(app_config["camera_drivers"], app_config.get("camera_protocols", {}))
+
+            if vcam_enabled is not None:
+                new_vcam_enabled = bool(vcam_enabled)
+                prev_vcam_enabled = bool(app_config.get("vcam_enabled", True))
+                app_config["vcam_enabled"] = new_vcam_enabled
+                if vcam_manager and (new_vcam_enabled != vcam_manager.enabled or new_vcam_enabled != prev_vcam_enabled):
+                    cams = discovery_daemon.get_all_cameras() if discovery_daemon else []
+                    vcam_manager.set_enabled(new_vcam_enabled, camera_list=cams, config=app_config)
 
             save_config(app_config)
             if discovery_daemon:
@@ -862,13 +900,28 @@ def main():
     res_w = cfg.get("resolution", {}).get("width", 1920)
     res_h = cfg.get("resolution", {}).get("height", 1080)
     res_fps = cfg.get("resolution", {}).get("fps", 25)
+    vcam_enabled = bool(cfg.get("vcam_enabled", True))
+
+    # Log startup hardware & network environment summary to camera.log
+    try:
+        import platform
+        from discovery import get_local_ipv4_addresses
+        from virtual_cam import get_installed_virtual_camera_drivers
+        cpu_threads = os.cpu_count() or 1
+        local_ips = ", ".join(get_local_ipv4_addresses()) or "sin IP local"
+        installed_drvs = ", ".join(get_installed_virtual_camera_drivers()) or "ninguno"
+        log_camera(
+            f"arranque de aplicación: SO={platform.system()} {platform.release()}, CPU={cpu_threads} hilos lógicos, IPs locales=[{local_ips}], DirectShow={'ACTIVO' if vcam_enabled else 'DESACTIVADO (Ahorro CPU)'}, drivers=[{installed_drvs}]"
+        )
+    except Exception as e:
+        log_camera(f"arranque de aplicación (error leyendo entorno: {e})")
 
     # 2. Initialize Camera Discovery Daemon
     discovery_daemon = CameraDiscoveryDaemon(cfg)
     discovery_daemon.start()
 
-    # 3. Initialize Virtual Camera Manager (Always-On Multicamera Bridge)
-    vcam_manager = VirtualCameraManager(width=res_w, height=res_h, fps=res_fps)
+    # 3. Initialize Virtual Camera Manager (Always-On Multicamera Bridge when enabled)
+    vcam_manager = VirtualCameraManager(width=res_w, height=res_h, fps=res_fps, enabled=vcam_enabled)
     vcam_manager.start_all(discovery_daemon.get_all_cameras(), config=cfg)
 
     # 4. Initialize Video Pipeline

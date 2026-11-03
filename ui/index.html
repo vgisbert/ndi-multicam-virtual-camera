@@ -130,6 +130,18 @@
       </div>
 
       <div class="flex flex-col gap-2 text-[9.5px] overflow-y-auto pr-1 pb-3 flex-1">
+        <!-- INTERRUPTOR DE SALIDA DIRECTSHOW (CÁMARAS VIRTUALES) -->
+        <div class="flex items-center justify-between bg-surface-lowest border border-border-tac rounded px-2 py-1.5 gap-2">
+          <div class="flex flex-col min-w-0">
+            <span class="text-txt-main font-bold uppercase text-[9px]" data-i18n="settings_vcam_switch_title">Drivers Virtuales DirectShow (OBS / Zoom)</span>
+            <span class="text-[8px] text-txt-muted/80 leading-tight" data-i18n="settings_vcam_switch_hint">Desactivar si solo se usa esta ventana y el Joystick PTZ (Ahorro ~85% CPU)</span>
+          </div>
+          <button type="button" id="cfg-vcam-switch" onclick="toggleSettingsVcamSwitch()" data-enabled="true" class="px-2 py-1 rounded font-bold text-[8.5px] uppercase tracking-wider border transition-all cursor-pointer shrink-0 flex items-center gap-1 bg-cyan-dim/60 border-cyan-tac text-cyan-tac">
+            <span id="cfg-vcam-switch-dot" class="w-1.5 h-1.5 rounded-full bg-cyan-tac shadow-[0_0_4px_#00f0ff]"></span>
+            <span id="cfg-vcam-switch-label">ACTIVO</span>
+          </button>
+        </div>
+
         <div class="flex flex-col gap-0.5">
           <label class="text-txt-muted uppercase font-bold" data-i18n="settings_preview_fps">Tasa de Refresco de Miniatura</label>
           <select id="cfg-preview-fps" class="bg-surface-lowest border border-border-tac rounded px-2 py-0.5 text-txt-main outline-none focus:border-cyan-tac text-[9.5px]">

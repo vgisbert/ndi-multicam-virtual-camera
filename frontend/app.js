@@ -934,6 +934,47 @@ function renderSettingsCameras(cameras, cfg) {
   });
 }
 
+function renderSettingsVcamSwitch(enabled) {
+  const btn = document.getElementById("cfg-vcam-switch");
+  const dot = document.getElementById("cfg-vcam-switch-dot");
+  const label = document.getElementById("cfg-vcam-switch-label");
+  if (!btn || !dot || !label) return;
+
+  const isOn = (enabled !== false);
+  btn.setAttribute("data-enabled", isOn ? "true" : "false");
+  if (isOn) {
+    btn.className = "px-2 py-1 rounded font-bold text-[8.5px] uppercase tracking-wider border transition-all cursor-pointer shrink-0 flex items-center gap-1 bg-cyan-dim/60 border-cyan-tac text-cyan-tac";
+    dot.className = "w-1.5 h-1.5 rounded-full bg-cyan-tac shadow-[0_0_4px_#00f0ff]";
+    label.textContent = t("settings_vcam_on") || "ACTIVO";
+  } else {
+    btn.className = "px-2 py-1 rounded font-bold text-[8.5px] uppercase tracking-wider border transition-all cursor-pointer shrink-0 flex items-center gap-1 bg-surface-high border-border-tac text-amber-tac";
+    dot.className = "w-1.5 h-1.5 rounded-full bg-amber-tac";
+    label.textContent = t("settings_vcam_off") || "OFF (ECO)";
+  }
+}
+
+async function toggleSettingsVcamSwitch() {
+  const btn = document.getElementById("cfg-vcam-switch");
+  if (!btn) return;
+  const currentlyEnabled = btn.getAttribute("data-enabled") !== "false";
+  const nextEnabled = !currentlyEnabled;
+  renderSettingsVcamSwitch(nextEnabled);
+  if (settingsConfig) {
+    settingsConfig.vcam_enabled = nextEnabled;
+  }
+  try {
+    await fetch("/api/vcam/toggle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: nextEnabled })
+    });
+    fetchStatus();
+    fetchCameras();
+  } catch (err) {
+    console.error("Error al conmutar DirectShow:", err);
+  }
+}
+
 function openSettings() {
   const modal = document.getElementById("modal-settings");
   if (!modal) return;
@@ -955,6 +996,7 @@ function openSettings() {
   // Populate fields
   fetch("/api/config").then(r => r.json()).then(cfg => {
     settingsConfig = cfg || {};
+    renderSettingsVcamSwitch(cfg.vcam_enabled !== false);
     if (document.getElementById("cfg-preview-fps")) {
       document.getElementById("cfg-preview-fps").value = String(cfg.preview_fps || 4);
     }
@@ -1068,12 +1110,15 @@ async function saveAndCloseSettings() {
     }
   });
 
+  const vcamSwitchEl = document.getElementById("cfg-vcam-switch");
+  const vcamEnabled = vcamSwitchEl ? (vcamSwitchEl.getAttribute("data-enabled") !== "false") : true;
   const previewFpsEl = document.getElementById("cfg-preview-fps");
   const previewFps = previewFpsEl ? parseInt(previewFpsEl.value, 10) : 4;
   const recDirEl = document.getElementById("cfg-recording-dir");
   const recDir = recDirEl ? recDirEl.value.trim() : "";
 
   const payload = {
+    vcam_enabled: vcamEnabled,
     aliases: aliases,
     protocols: protocols,
     camera_drivers: drivers,

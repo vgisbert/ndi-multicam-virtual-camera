@@ -198,6 +198,16 @@ La asignación de alias para cada cámara permite una identificación táctica c
 3. **Validación Anti-Colisiones Agrupada por IP Física:** En el backend (`core/main.py`), la validación verifica la unicidad de nombres agrupando por la dirección física/IP de cada cámara. Esto previene falsos positivos provocados por representaciones redundantes de una misma cámara física (como identificadores de MAC sintética vs. resuelta).
 4. **Persistencia Sincronizada:** Los alias se guardan en `config_camera.json` bajo `"camera_aliases"` y se sincronizan atómicamente con `discovery_daemon.config`, garantizando que futuros barridos de red respeten siempre el nombre personalizado configurado por el usuario.
 
+### 6.9. Interruptor de Salida DirectShow (`vcam_enabled`), Modo Zero-Copy y Telemetría de Cuello de Botella en `camera.log`
+En equipos de recursos contenidos (como portátiles de 2 núcleos / 4 hilos lógicos que ejecutan simultáneamente Zoom u OBS para captura de pantalla y solo emplean esta aplicación como visor y apoyo al *NDI PTZ Joystick Controller*):
+1. **Interruptor Global en Configuración (`Drivers Virtuales DirectShow: ACTIVO / OFF (ECO)`):** Persiste en `config_camera.json` bajo `"vcam_enabled"`. Al conmutarlo a `OFF (ECO)`, detiene todos los hilos `VCamStreamer` (`pyvirtualcam`) y cierra la memoria compartida DirectShow.
+2. **Descarte Rápido en C (*Zero-Copy Fast-Discard* en `video_pipeline.py`):** Cuando `vcam_enabled` está desactivado (o la cámara tiene asignado `(Ninguno)`) y no hay grabación MKV en curso, `_worker_ndi_loop` solo copia de C a Python/NumPy (`ctypes.string_at` $\rightarrow$ `np.frombuffer`) los fotogramas que tocan para refrescar la miniatura de la interfaz (ej. 4 FPS). Los ~21 fotogramas restantes por segundo se contabilizan para el medidor de FPS y se liberan inmediatamente en C (`ndi.free_frame`), reduciendo el tráfico en RAM de ~725 MB/s a ~58 MB/s (~90% menos carga de CPU/GIL).
+3. **Telemetría Automática Red vs. CPU en `camera.log` y Endpoint `/api/log`:**
+   * Al arrancar, registra un resumen del entorno (`SO`, `hilos lógicos de CPU`, `IPs locales`, estado `DirectShow` y drivers instalados).
+   * En cada ventana de 1 segundo mide por separado el tiempo de espera en socket NDI/RTSP (`espera red`) frente al tiempo de procesado en el PC (`proceso PC`) y el número de timeouts. Si los FPS caen por debajo de 15 FPS, escribe automáticamente en `camera.log` el diagnóstico diferencial (`causa probable: RED LENTA / CÁMARA` vs. `SATURACIÓN CPU DEL PC`).
+   * Al finalizar una grabación MKV, registra los fotogramas escritos, los descartados en cola (`dropped_frames`) y los FPS reales efectivos.
+   * Puede consultarse en vivo sin abrir archivos entrando desde cualquier navegador local en `http://127.0.0.1:8765/api/log`.
+
 ---
 
 ## 7. Tratamiento del Audio: Flujo NDI, Drivers Virtuales y Sincronización
