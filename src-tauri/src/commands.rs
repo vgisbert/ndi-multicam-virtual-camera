@@ -85,12 +85,12 @@ pub fn save_config(state: State<'_, AppState>, new_config: AppConfig) -> Result<
     if let Ok(mut cfg) = state.config.lock() {
         *cfg = new_config.clone();
     }
-    // Save to config.json next to executable or working dir
+    // Save to config_camera.json next to executable or working dir
     let json = serde_json::to_string_pretty(&new_config).map_err(|e| e.to_string())?;
     let config_path = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("config.json")))
-        .unwrap_or_else(|| std::path::PathBuf::from("config.json"));
+        .and_then(|p| p.parent().map(|d| d.join("config_camera.json")))
+        .unwrap_or_else(|| std::path::PathBuf::from("config_camera.json"));
 
     std::fs::write(&config_path, json).map_err(|e| e.to_string())?;
     Ok(())

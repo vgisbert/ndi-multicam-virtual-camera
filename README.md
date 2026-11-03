@@ -35,15 +35,18 @@
    Permite vincular interactivamente cualquier cámara descubierta a cualquier driver DirectShow instalado en Windows (`NDI Camara 1`, `NDI Camara 2`, `OBS Virtual Camera`, etc.). Si un driver seleccionado ya está en uso, el sistema efectúa un intercambio (*swap*) automático, manteniendo los flujos balanceados sin reiniciar ni recrear filtros COM en caliente.
 
 6. **Gestión de Alias Personalizados y Sincronización en Tiempo Real:**  
-   Asignación intuitiva de nombres tácticos para cada cámara (ej. *Cámara Frontal*, *Cámara Mesa*). Las modificaciones se reflejan de inmediato en las tarjetas de la interfaz principal, se propagan a los trabajadores del pipeline y se guardan de forma persistente en `config.json`.
+   Asignación intuitiva de nombres tácticos para cada cámara (ej. *Cámara Frontal*, *Cámara Mesa*). Las modificaciones se reflejan de inmediato en las tarjetas de la interfaz principal, se propagan a los trabajadores del pipeline y se guardan de forma persistente en `config_camera.json` (renombrado específicamente para evitar colisiones con otros programas de la suite).
 
-7. **Tráfico de Red Optimizado y Silencio en Emisión:**  
-   La búsqueda activa por mDNS, unicast NDI y sondeos de puertos opera únicamente durante los primeros 8 segundos de arranque y mientras el panel de ajustes permanece abierto. Durante la emisión en la ventana principal, el escaneo entra en reposo pasivo absoluto, garantizando cero perturbaciones de red y mínimo uso de CPU.
+7. **Tráfico de Red Optimizado, Sondeo Exclusivo en Configuración y Botón «Inicializar» (Cambio de Red):**  
+   El sondeo periódico de cámaras en la red (mDNS, barrido paralelo de subred en puerto 5961, resolución ARP y sondeo TCP) se ejecuta **exclusivamente mientras la pantalla de Configuración permanece abierta**. Incluye un botón **«Inicializar»** (situado junto a la IP en Configuración) para olvidar MACs e IPs de redes anteriores y descubrir desde 0 todas las cámaras de una nueva subred en menos de 1 segundo. Durante la emisión en la ventana principal, el sondeo entra en reposo absoluto.
 
-8. **Ciclo de Vida Blindado y Cierre Atómico (Cero Procesos Zombies):**  
+8. **Registro de Diagnóstico en Producción (`camera.log`):**  
+   Generación automática del fichero `camera.log` en la carpeta de trabajo con formato `<aammdd-hhmmss> <mensaje>`, registrando incidencias anormales y transiciones clave (ausencia de cámaras en red, cámaras activas/desconectadas, fallos de receptor NDI/RTSP, drivers DirectShow o codificadores FFmpeg).
+
+9. **Ciclo de Vida Blindado y Cierre Atómico (Cero Procesos Zombies):**  
    Auto-asignación a *Windows Job Objects* (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) y salida forzada a nivel de kernel mediante `TerminateProcess(GetCurrentProcess(), 0)` (`force_clean_exit`). Garantiza que al cerrar con el aspa `X` todos los subprocesos de WebView2 y FFmpeg son purgados instantáneamente y los descriptores DirectShow se descargan de inmediato.
 
-9. **Arquitectura, Distribución Portable y Respaldo:**  
+10. **Arquitectura, Distribución Portable y Respaldo:**  
    * **Entorno de desarrollo Python:** Servidor HTTP táctico local + GUI en PyWebView ([`arrancar.bat`](file:///arrancar.bat)).
    * **Suite Portable Lista para Usar:** Paquete empaquetado en [`dist_portable/`](file:///dist_portable/) con ejecutable autónomo (`NDI Virtual Camera.exe`), dependencias NDI y FFmpeg integradas, y paquete comprimido `.zip` listo para pendrive.
    * **Sistema de Respaldo Automatizado:** Script [`backup.py`](file:///backup.py) para generar copias de seguridad versionadas por fecha y hora con empaquetado `.zip` automático.

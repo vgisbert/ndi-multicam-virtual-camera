@@ -9,6 +9,7 @@ import threading
 import numpy as np
 import cv2
 from typing import Dict, Optional, List
+from logger import log_camera
 
 try:
     import pyvirtualcam
@@ -108,6 +109,7 @@ class VirtualCameraDevice:
         if self.is_active:
             return True
         if not HAS_PYVIRTUALCAM:
+            log_camera("error en la aplicación: librería pyvirtualcam no disponible", key="no_pyvcam", min_interval_s=300.0)
             return False
 
         try:
@@ -132,6 +134,7 @@ class VirtualCameraDevice:
             return True
         except Exception as e:
             print(f"[ERROR] No se pudo inicializar camara virtual {self.channel_id} ({self.device_name}): {e}")
+            log_camera(f"error al inicializar cámara virtual '{self.device_name or self.channel_id}': {e}", key=f"vcam_init_{self.channel_id}", min_interval_s=60.0)
             self.is_active = False
             self._cam = None
             return False
@@ -278,7 +281,7 @@ class VirtualCameraManager:
     def get_driver_for_camera(self, channel_id: str = "", source_label: str = "", ip: str = "") -> str:
         """Resolves the assigned DirectShow driver name for a given camera."""
         with self._lock:
-            # 1. Match by channel_id (e.g. cam-0200c0a8096c)
+            # 1. Match by channel_id (e.g. cam-986ee85f3954)
             if channel_id and channel_id in self.camera_drivers:
                 return self.camera_drivers[channel_id]
             # 2. Match by IP
@@ -288,9 +291,26 @@ class VirtualCameraManager:
             for k, v in self.camera_drivers.items():
                 if (k and k in channel_id) or (k and k in source_label):
                     return v
-            # 4. Default fallback: Cam 2 (192.168.9.171) -> NDI Camara 2, Cam 1 -> NDI Camara 1
-            is_c2 = ("2" in source_label) or ("171" in source_label) or ("171" in ip) or ("cam_2" in channel_id) or ("vcam_2" in channel_id)
+            # 4. Default fallback based on alias number (ignoring digits inside IP addresses like 192.x.x.x)
+            alias_part = source_label.split("(")[0].strip().lower() if source_label else ""
+            # Strip out any IPv4 patterns from alias_part before checking for camera number 2
+            import re
+            alias_no_ip = re.sub(r"\d+\.\d+\.\d+\.\d+", "", alias_part).strip()
+            is_c2 = (
+                alias_no_ip.endswith("2")
+                or "cám 2" in alias_no_ip
+                or "cam 2" in alias_no_ip
+                or "cámara 2" in alias_no_ip
+                or "camara 2" in alias_no_ip
+                or ip.endswith(".171")
+                or ("cam_2" in channel_id)
+                or ("vcam_2" in channel_id)
+            )
             return "NDI Camara 2" if is_c2 else "NDI Camara 1"
+
+    def clear_driver_mapping(self):
+        with self._lock:
+            self.camera_drivers.clear()
 
     def update_driver_mapping(self, new_mapping: dict, protocols_cfg: dict = None):
         """Updates driver associations dynamically and instantaneously."""
@@ -403,6 +423,8 @@ class VirtualCameraManager:
                 all_ok = False
 
         self.is_active = any(d.is_active for d in self.devices.values())
+        if not self.is_active:
+            log_camera("error: no se pudo activar ningún dispositivo de cámara virtual DirectShow (verificar registro de driver)", key="vcam_none_active", min_interval_s=60.0)
         return self.is_active
 
     def stop_all(self):

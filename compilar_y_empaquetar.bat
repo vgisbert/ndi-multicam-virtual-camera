@@ -39,8 +39,8 @@ copy /Y "C:\Users\super\.cargo\target_vcam\release\WebView2Loader.dll" "dist_por
 if exist "core\lib\Processing.NDI.Lib.x64.dll" (
     copy /Y "core\lib\Processing.NDI.Lib.x64.dll" "dist_portable\Processing.NDI.Lib.x64.dll" >nul
 )
-if exist "config.json" (
-    copy /Y "config.json" "dist_portable\config.json" >nul
+if exist "config_camera.json" (
+    copy /Y "config_camera.json" "dist_portable\config_camera.json" >nul
 )
 
 :: Copiar driver multicamara

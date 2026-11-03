@@ -13,10 +13,11 @@ import numpy as np
 import cv2
 import collections
 from typing import Dict, Optional, List, Callable
-from ndi_wrapper import get_ndi, NDILIB_FRAME_TYPE_VIDEO
+from ndi_wrapper import get_ndi, NDILIB_FRAME_TYPE_VIDEO, NDILIB_FRAME_TYPE_ERROR
 from discovery import CameraDiscoveryDaemon
 from virtual_cam import VirtualCameraManager
 from recorder import MultiCameraRecordingManager
+from logger import log_camera
 
 def normalize_broadcast_fps(raw_fps: float) -> float:
     """Normalizes physical frame rates to standard broadcast standards (PAL / NTSC / high rate)."""
@@ -75,11 +76,13 @@ class CameraStreamWorker:
         self._cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
         if not self._cap.isOpened():
             print(f"[ERROR] No se pudo conectar a flujo RTSP en {rtsp_url}", flush=True)
+            log_camera(f"error al conectar flujo RTSP en cámara: {self.ip} ({self.alias})", key=f"rtsp_conn_{self.ip}", min_interval_s=30.0)
             self._running = False
             return
 
         print(f"[OK] Canal RTSP (720p) activo para: {self.alias} ({rtsp_url})", flush=True)
         last_thumb_time = 0.0
+        last_frame_ok = time.time()
         fps_frame_count = 0
         fps_timer = 0.0
         warmup_frames = 5
@@ -87,10 +90,13 @@ class CameraStreamWorker:
         while self._running and self._cap and self._cap.isOpened():
             ret, bgr_img = self._cap.read()
             if not ret or bgr_img is None:
+                if time.time() - last_frame_ok > 8.0:
+                    log_camera(f"sin recepción de fotogramas RTSP en cámara: {self.ip} ({self.alias})", key=f"rtsp_stall_{self.ip}", min_interval_s=60.0)
                 time.sleep(0.015)
                 continue
 
             now = time.time()
+            last_frame_ok = now
             if warmup_frames > 0:
                 warmup_frames -= 1
                 fps_timer = now
@@ -152,13 +158,19 @@ class CameraStreamWorker:
                 url_address=self.url_address,
                 recv_name=f"NDI Ingest {self.ip}"
             )
+            if not self._receiver:
+                log_camera(f"error al crear receptor NDI para cámara: {self.ip} ({self.alias})", key=f"ndi_recv_{self.ip}", min_interval_s=30.0)
+                self._running = False
+                return
             print(f"[OK] Canal NDI activo para: {self.alias} ({self.url_address})")
         except Exception as e:
             print(f"[ERROR] No se pudo crear receptor NDI para {self.url_address}: {e}")
+            log_camera(f"error al crear receptor NDI para cámara {self.ip} ({self.alias}): {e}", key=f"ndi_recv_{self.ip}", min_interval_s=30.0)
             self._running = False
             return
 
         last_thumb_time = 0.0
+        last_frame_ok = time.time()
         fps_frame_count = 0
         fps_timer = 0.0
         warmup_frames = 5
@@ -168,6 +180,7 @@ class CameraStreamWorker:
             if frame_type == NDILIB_FRAME_TYPE_VIDEO and video_frame:
                 try:
                     now = time.time()
+                    last_frame_ok = now
                     if warmup_frames > 0:
                         warmup_frames -= 1
                         fps_timer = now
@@ -208,10 +221,14 @@ class CameraStreamWorker:
                                 self.latest_thumbnail_b64 = None
 
                 except Exception as e:
-                    pass
+                    log_camera(f"error procesando fotograma NDI de cámara {self.ip}: {e}", key=f"ndi_frame_err_{self.ip}", min_interval_s=30.0)
                 finally:
                     ndi.free_frame(self._receiver, video_frame)
             else:
+                if frame_type == NDILIB_FRAME_TYPE_ERROR:
+                    log_camera(f"error en trama de red NDI de cámara: {self.ip} ({self.alias})", key=f"ndi_net_err_{self.ip}", min_interval_s=30.0)
+                elif time.time() - last_frame_ok > 8.0:
+                    log_camera(f"cámara en red pero sin entregar vídeo NDI: {self.ip} ({self.alias})", key=f"ndi_stall_{self.ip}", min_interval_s=60.0)
                 time.sleep(0.010)
 
             # Medidor de FPS continuo con ventana de 1.0s y normalización broadcast
@@ -349,6 +366,7 @@ class VideoPipeline:
 
             except Exception as e:
                 print(f"[WARN] Error en ciclo coordinador de video: {e}", flush=True)
+                log_camera(f"error en ciclo coordinador de vídeo: {e}", key="coord_err", min_interval_s=30.0)
 
             time.sleep(0.8)
 

@@ -67,6 +67,7 @@ hiddenimports = [
     'discovery',
     'virtual_cam',
     'ndi_wrapper',
+    'logger',
     'unicodedata',
     'queue',
 ]
@@ -151,10 +152,10 @@ if not os.path.exists(dist_app_dir):
 print("  [OK] Binario compilado exitosamente.")
 
 # 3. Empaquetar driver, config y guia de uso
-print("[3/4] Integrando archivos auxiliares (driver, config.json, instrucciones)...")
+print("[3/4] Integrando archivos auxiliares (driver, config_camera.json, instrucciones)...")
 
-# Copiar config.json base
-shutil.copy2(os.path.join(BASE_DIR, "config.json"), os.path.join(dist_app_dir, "config.json"))
+# Copiar config_camera.json base
+shutil.copy2(os.path.join(BASE_DIR, "config_camera.json"), os.path.join(dist_app_dir, "config_camera.json"))
 
 # Copiar ffmpeg.exe para grabacion autonoma en Windows 10
 ffmpeg_src = shutil.which("ffmpeg")
@@ -204,13 +205,15 @@ BOTONES Y FUNCIONES PRINCIPALES:
 - BOTON VISTA ON / ECO: Permite pausar la previsualizacion en pantalla para
   reducir el uso de CPU al minimo sin interrumpir la camara virtual ni la grabacion.
 - BOTON RUEDA AJUSTES (Aspa X para guardar y salir): Configura IPs de camaras,
-  alias/nombres unicos, protocolo/resolucion por camara (NDI 1080p o RTSP 720p nativo
-  para maximo ahorro de CPU y red), tasa de refresco (2/4/8 FPS) y carpeta de grabaciones.
+  boton "Inicializar" (al lado de la IP) para olvidar MACs/IPs previas y buscar desde 0
+  al cambiar de red, alias/nombres unicos, protocolo/resolucion por camara (NDI 1080p o
+  RTSP 720p nativo para maximo ahorro de CPU y red), tasa de refresco (2/4/8 FPS) y
+  carpeta de grabaciones.
 
 NOTAS IMPORTANTES:
-- Asegurate de que este equipo este conectado a la misma red local que las
-  camaras (ej. IPs 192.168.9.108 y 192.168.9.171). Si las camaras tienen otras IPs,
-  puedes cambiarlas en la pantalla de Ajustes o en el archivo "config.json".
+- Si trasladas el programa y las camaras a otra red con distinto rango IP, abre Ajustes
+  y pulsa el boton "Inicializar" (al lado de la IP) para descubrirlas desde cero.
+- Cualquier incidencia en produccion queda registrada en el archivo "camera.log".
 - No es necesario tener Python ni NDI Runtime instalado en el equipo.
 =============================================================================
 """

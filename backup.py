@@ -16,7 +16,7 @@ BACKUPS_DIR = os.path.join(BASE_DIR, "backups")
 FILES_TO_BACKUP = [
     # Control de versiones y configuración
     ".gitignore",
-    "config.json",
+    "config_camera.json",
     "README.md",
     
     # Documentación técnica y especificaciones

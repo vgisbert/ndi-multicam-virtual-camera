@@ -55,8 +55,12 @@ flowchart TD
 
 ---
 
-### FASE 5: Empaquetado y Portabilidad
+### FASE 5: Empaquetado, Diagnóstico en Producción y Portabilidad
 * [x] **5.1. Launcher Auto-Reparable (`arrancar.bat`):**
   * Mapeo `subst V:`, verificación de entorno virtual y comprobación de DirectShow.
 * [x] **5.2. Sistema de Respaldo (`backup.py`):**
   * Copias de seguridad automáticas con exclusión de `venv`.
+* [x] **5.3. Configuración Independiente (`config_camera.json`) e Inicialización de Red desde Cero:**
+  * Archivo `config_camera.json` dedicado, sondeo periódico exclusivo en la ventana de Configuración y botón «Inicializar» (al lado de la IP) con barrido rápido de subred (`5961 TCP`) para cambios de red/rango IP.
+* [x] **5.4. Registro de Incidencias en Producción (`camera.log`):**
+  * Trazabilidad con marca temporal `<aammdd-hhmmss>` en [`core/logger.py`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/core/logger.py) para entornos Windows 10 sin depurador.

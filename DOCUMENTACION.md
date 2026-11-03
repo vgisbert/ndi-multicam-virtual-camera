@@ -177,26 +177,26 @@ La aplicación permite vincular de manera flexible y personalizada cada cámara 
 1. **Botón Interactivo de Driver:** En la ventana de configuración, el indicador del driver asociado se comporta como un botón táctico desplegable que lista todos los drivers virtuales instalados en Windows.
 2. **Lógica de Intercambio Automático (Swap):** Si el operador selecciona un driver que ya se encuentra asignado a otra cámara, el sistema realiza automáticamente un intercambio (*swap*), asignando el driver previo a la otra cámara y el nuevo a la cámara actual. Ambos botones se actualizan en tiempo real con una animación visual de confirmación.
 3. **Liberación y Desactivación:** Si se selecciona un driver libre o la opción `(Ninguno)`, el driver anterior queda liberado y la cámara puede permanecer sin salida DirectShow (`Desactivado`), evitando colisiones y uso innecesario de buffers de render.
-4. **Persistencia en `config.json`:** Las asignaciones se guardan en la clave `"camera_drivers"` y se restauran fielmente al iniciar el programa.
+4. **Persistencia en `config_camera.json`:** Las asignaciones se guardan en la clave `"camera_drivers"` y se restauran fielmente al iniciar el programa.
 
 ### 6.6. Prevención de Bloqueos (Deadlocks) y Reescalado en Memoria
 Para garantizar que la reasignación de drivers o el cambio de resolución/protocolo nunca congele la aplicación:
 1. **Eliminación del Deadlock COM en DirectShow:** La destrucción y recreación en caliente de instancias `pyvirtualcam` provocaba un bloqueo mutuo (*deadlock*) irreversible en los descriptores COM de Windows (`UnityCaptureFilter64.dll`). Este comportamiento se erradicó implementando reescalado en memoria (`cv2.resize`) adaptativo: el dispositivo virtual DirectShow se inicializa una sola vez a su resolución nativa y el pipeline ajusta en RAM las dimensiones del fotograma antes de inyectarlo.
 2. **Cerrojos Reentrantes (`threading.RLock`):** Los bloqueos simples `threading.Lock()` fueron reemplazados por `threading.RLock()` en `VirtualCameraManager` y `CameraDiscoveryDaemon`, permitiendo que el hilo de interfaz o de reasignación invoque métodos sincronizados de forma anidada sin riesgo de auto-bloqueo.
 
-### 6.7. Política de Búsqueda en Red y Optimización de Tráfico ARP
-Para garantizar la máxima estabilidad del enlace de vídeo y evitar el tráfico innecesario en la red local:
-1. **Caché de Direcciones Físicas (SendARP):** La API nativa de Windows `iphlpapi.SendARP` solo se invoca una única vez por cada dirección IP detectada. El resultado se almacena en `_MAC_CACHE`. Si el dispositivo ya está indexado, no se vuelve a generar ninguna petición ARP en la red.
-2. **Búsqueda en el Arranque (Boot Scan):** El demonio de descubrimiento (`CameraDiscoveryDaemon`) ejecuta la búsqueda activa por mDNS, unicast NDI y sondeo de puertos TCP únicamente durante los primeros **8 segundos** tras el inicio para detectar y enlazar las cámaras disponibles.
-3. **Reposo Silencioso en Ventana Principal:** Una vez transcurrida la fase inicial de arranque, el escaneo activo se detiene automáticamente y entra en espera pasiva (`_scan_event.wait`). Durante la emisión en la ventana principal, **no se realiza ningún sondeo programado en segundo plano**, reduciendo a cero el ruido en la red y liberando ciclos de CPU.
-4. **Activación Exclusiva en Configuración:** Cuando el usuario abre el panel de configuración (modal de ajustes), el cliente web envía una petición `POST /api/discovery/start` que reactiva la búsqueda en red para reflejar cámaras nuevas o reconexiones al vuelo. Al cerrar la configuración (`POST /api/discovery/stop`, por guardado, aspa, Escape o clic fuera), la búsqueda se apaga de inmediato.
+### 6.7. Política de Búsqueda en Red, Sondeo Exclusivo en Configuración y Botón «Inicializar»
+Para garantizar la máxima estabilidad del enlace de vídeo, evitar el tráfico innecesario en la red local y permitir cambiar de red/subred sin bloqueos:
+1. **Caché de Direcciones Físicas (SendARP) y Unificación de `cam_id`:** La API nativa de Windows `iphlpapi.SendARP` se almacena en `_MAC_CACHE`. Cuando una cámara responde y se resuelve su MAC física real (`cam-986e...`), cualquier identificador sintético temporal (`cam-0200...`) se migra automáticamente al ID físico sin duplicar entradas.
+2. **Reposo Silencioso en Ventana Principal (Cero Sondeo Periódico):** En el arranque solo se realiza una comprobación puntual única de las IPs previamente guardadas en `config_camera.json`. Durante toda la operación en la ventana principal, el bucle de sondeo periódico permanece **totalmente detenido** (`_scan_event.wait`), reduciendo a cero el ruido en la red y liberando ciclos de CPU.
+3. **Sondeo Periódico Exclusivo en la Pantalla de Configuración:** El sondeo periódico de cámaras se activa única y exclusivamente mientras la ventana modal de Configuración está abierta (`POST /api/discovery/start`) y se detiene al cerrarla (`POST /api/discovery/stop`). Además, la interfaz de configuración actualiza reactivamente en vivo la lista de cámaras conforme van siendo descubiertas.
+4. **Botón «Inicializar» (al lado de la IP) y Barrido Rápido de Subred (`5961 TCP`):** Al trasladar el equipo y las cámaras a una red con distinto rango IP (ej. de `192.168.9.x` a `192.168.1.x`), pulsar el botón **«Inicializar»** en Configuración (`POST /api/config/reset`) olvida todas las MACs e IPs anteriores, limpia `config_camera.json` y ejecuta un barrido paralelo (`ThreadPoolExecutor` de 64 hilos en `sweep_local_subnet_ndi`) sobre el puerto NDI `5961` de la subred local activa. Esto descubre en `< 0.8 s` todas las cámaras Nuroum V403 aunque compartan el mismo nombre NDI de fábrica (`HAMEDAL-V403 (Channel 1)`), evitando la colisión mDNS y asignándoles automáticamente alias y drivers separados (`Cám 1` $\rightarrow$ `NDI Camara 1`, `Cám 2` $\rightarrow$ `NDI Camara 2`).
 
 ### 6.8. Gestión y Persistencia de Nombres Personalizados (Alias) de Cámaras
 La asignación de alias para cada cámara permite una identificación táctica clara en la emisión:
 1. **Prioridad Absoluta al Nombre de Usuario:** La interfaz respeta incondicionalmente cualquier nombre ingresado por el operador. Las etiquetas automáticas o por defecto (`Cám 1`, `Cám 2`) solo se emplean si el campo se deja expresamente vacío.
 2. **Sincronización Inmediata en el DOM:** Al presionar **Guardar**, el nombre se proyecta instantáneamente sobre las cabeceras `.cam-alias` de las tarjetas de cámara en pantalla y sobre los trabajadores del pipeline (`video_pipeline.workers`) con cero latencia visual.
 3. **Validación Anti-Colisiones Agrupada por IP Física:** En el backend (`core/main.py`), la validación verifica la unicidad de nombres agrupando por la dirección física/IP de cada cámara. Esto previene falsos positivos provocados por representaciones redundantes de una misma cámara física (como identificadores de MAC sintética vs. resuelta).
-4. **Persistencia Sincronizada:** Los alias se guardan en `config.json` bajo `"camera_aliases"` y se sincronizan atómicamente con `discovery_daemon.config`, garantizando que futuros barridos de red respeten siempre el nombre personalizado configurado por el usuario.
+4. **Persistencia Sincronizada:** Los alias se guardan en `config_camera.json` bajo `"camera_aliases"` y se sincronizan atómicamente con `discovery_daemon.config`, garantizando que futuros barridos de red respeten siempre el nombre personalizado configurado por el usuario.
 
 ---
 
@@ -255,7 +255,7 @@ Con el fin de posibilitar la ejecución de la suite tanto en equipos de altas pr
 - Al ocultarse o minimizarse la interfaz, el sondeo de miniaturas se detiene y la telemetría se reduce de 500 ms a 2000 ms, liberando la CPU del equipo.
 
 ### 8.3. Tasa de Refresco de Previsualización Configurable
-- Selector disponible en la ventana de Ajustes con persistencia en [`config.json`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/config.json):
+- Selector disponible en la ventana de Ajustes con persistencia en [`config_camera.json`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/config_camera.json):
   - **2 FPS (Modo Eco):** Ideal para equipos modestos de control desatendido.
   - **4 FPS (Equilibrado - Recomendado):** Proporciona supervisión visual clara con consumo de CPU mínimo (<3%).
   - **8 FPS (Fluido):** Orientado al puesto de operador con control de joystick PTZ activo.
@@ -287,7 +287,7 @@ La inspección técnica del fichero resultante confirma una parametrización óp
 - **Seguridad en el Grabador (`MultiCameraRecordingManager`):** Si por alguna razón concurrente dos cámaras compartiesen nombre, el grabador detecta la colisión y añade de forma automática un sufijo identificativo (`_108`, `_171`), impidiendo en cualquier escenario la sobreescritura accidental de ficheros de vídeo.
 
 ### 8.6. Optimización Ergonómica de Configuración y Sondeo de Red en Caliente
-- **Cierre y Guardado Unificado (Aspa `X`):** Se eliminaron los botones inferiores (`CANCELAR` / `GUARDAR`). El botón de cierre `X` en la cabecera valida los campos, persiste los cambios en [`config.json`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/config.json) y cierra la ventana en un único clic, ahorrando espacio vertical.
+- **Cierre y Guardado Unificado (Aspa `X`):** Se eliminaron los botones inferiores (`CANCELAR` / `GUARDAR`). El botón de cierre `X` en la cabecera valida los campos, persiste los cambios en [`config_camera.json`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/config_camera.json) y cierra la ventana en un único clic, ahorrando espacio vertical.
 - **Ajuste de Dimensiones y Visibilidad Completa:** El formulario se rediseñó a una altura compacta (~240 px) con espaciado optimizado y scroll interno suave, asegurando que todos los campos y la última línea de alias sean 100% visibles incluso en el modo de 1 sola cámara (395 px de alto).
 - **Sondeo de IPs en Caliente (*Hot-Reload*):** Al modificar el listado de IPs dirigidas en la interfaz, el demonio [`CameraDiscoveryDaemon.update_extra_ips()`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/core/discovery.py) actualiza la instancia de NDI Finder al vuelo y comienza a sondear las nuevas direcciones IP inmediatamente, sin requerir reinicio del programa.
 
@@ -588,9 +588,28 @@ Para garantizar la integridad del código fuente, configuraciones y documentaci�
    - **Frontend & UI:** Código táctico HTML/Tailwind/JS (`ui/` y `frontend/`).
    - **Backend Python:** Motor NDI, servidores y lógica de red (`core/`).
    - **Motor Nativo Rust / Tauri:** Código de bajo nivel en [`src-tauri/`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/src-tauri/).
-   - **Configuración y Scripts:** `config.json`, `arrancar.bat`, `compilar_y_empaquetar.bat`, `build_exe.py` y el propio `backup.py`.
+   - **Configuración y Scripts:** `config_camera.json`, `arrancar.bat`, `compilar_y_empaquetar.bat`, `build_exe.py` y el propio `backup.py`.
    - **Documentación Viva:** Todas las guías técnicas, especificaciones y manuales Markdown.
 4. **Métricas en Pantalla:** Reporta en tiempo real cada elemento respaldado, su peso en bytes, el total acumulado en megabytes y la confirmación del archivo `.zip` generado.
+
+---
+
+## 14. Registro de Diagnóstico en Producción (`camera.log`) y Gestión de Configuración (`config_camera.json`)
+
+### 14.1. Fichero de Configuración Dedicado (`config_camera.json`)
+Para evitar confusiones o colisiones al convivir en la misma carpeta o entorno de trabajo con otros programas (como el controlador de joystick PTZ), el archivo de configuración tanto en desarrollo como en la versión portable se denomina **`config_camera.json`**.
+
+### 14.2. Registro de Incidencias en Producción (`camera.log`)
+Dado que en entornos de producción en Windows 10 la aplicación portable se ejecuta sin consola ni herramientas de depuración adjuntas, el módulo [`core/logger.py`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/core/logger.py) genera automáticamente en la carpeta de trabajo el fichero **`camera.log`**:
+* **Formato estandarizado:** `<aammdd-hhmmss> <mensaje>` (ej. `261103-104708 no encuentro cámaras en la red`, `261103-104712 cámara activa: 192.168.1.128 (Cám 1) [NDI]`).
+* **Control anti-inundación (*Deduplication & State-Change*):** Utiliza [`log_state_change`](file:///d:/Documentos/Antigravity/NDI%20Virtual%20C%C3%A1mera/core/logger.py#L48-L60) e intervalos mínimos por clave para registrar transiciones de estado e incidencias sin repetir el mismo mensaje en bucle.
+* **Eventos registrados:**
+  - Ausencia de cámaras accesibles en la red (`no encuentro cámaras en la red`).
+  - Conexión de cámaras activas (`cámara activa: <IP> (<alias>) [<protocolo>]`) y caídas de conexión (`cámara desconectada / sin respuesta en la red: <IP>`).
+  - Inicialización de la configuración desde cero por parte del usuario.
+  - Cámaras conectadas en red pero sin entrega de fotogramas de vídeo NDI/RTSP.
+  - Errores de inicialización de drivers DirectShow (`pyvirtualcam` / `UnityCapture`), librería NDI (`Processing.NDI.Lib.x64.dll`), codificador FFmpeg, WebView2 o excepciones no controladas en hilos (`sys.excepthook` y `threading.excepthook`).
+
 
 
 

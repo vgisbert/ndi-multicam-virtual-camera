@@ -22,11 +22,12 @@ if getattr(sys, "frozen", False):
     BASE_DIR = EXE_DIR
     CORE_DIR = os.path.join(BUNDLE_DIR, "core") if os.path.exists(os.path.join(BUNDLE_DIR, "core")) else BUNDLE_DIR
     UI_DIR = os.path.join(BUNDLE_DIR, "ui") if os.path.exists(os.path.join(BUNDLE_DIR, "ui")) else os.path.join(EXE_DIR, "ui")
-    CONFIG_PATH = os.path.join(EXE_DIR, "config.json")
+    CONFIG_PATH = os.path.join(EXE_DIR, "config_camera.json")
     try:
-        _log_file = open(os.path.join(EXE_DIR, "vcam_debug.log"), "w", encoding="utf-8", buffering=1)
-        sys.stdout = _log_file
-        sys.stderr = _log_file
+        if sys.stdout is None:
+            sys.stdout = open(os.devnull, "w", encoding="utf-8")
+        if sys.stderr is None:
+            sys.stderr = open(os.devnull, "w", encoding="utf-8")
     except Exception:
         pass
 else:
@@ -34,12 +35,15 @@ else:
     BASE_DIR = os.path.dirname(CORE_DIR)
     BUNDLE_DIR = BASE_DIR
     UI_DIR = os.path.join(BASE_DIR, "ui")
-    CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
+    CONFIG_PATH = os.path.join(BASE_DIR, "config_camera.json")
 
 ICON_PATH = os.path.join(UI_DIR, "icon.ico")
 
 if CORE_DIR not in sys.path:
     sys.path.insert(0, CORE_DIR)
+
+from logger import log_camera, install_exception_hooks
+install_exception_hooks()
 
 from ndi_wrapper import get_ndi
 from discovery import CameraDiscoveryDaemon
@@ -315,7 +319,10 @@ def load_config():
                 app_config = json.load(f)
                 return app_config
         except Exception as e:
-            print(f"[WARN] Error al leer config.json: {e}")
+            print(f"[WARN] Error al leer config_camera.json: {e}")
+            log_camera(f"error al leer config_camera.json: {e}")
+    else:
+        log_camera("no se encontró config_camera.json, aplicando configuración por defecto")
     app_config = {
         "virtual_camera_name": "NDI Virtual Camera",
         "selected_source": "",
@@ -332,10 +339,11 @@ def save_config(new_cfg):
     try:
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(app_config, f, indent=2, ensure_ascii=False)
-        print("[OK] config.json actualizado correctamente.")
+        print("[OK] config_camera.json actualizado correctamente.")
         return True
     except Exception as e:
-        print(f"[ERROR] Error al guardar config.json: {e}")
+        print(f"[ERROR] Error al guardar config_camera.json: {e}")
+        log_camera(f"error al guardar config_camera.json: {e}")
         return False
 
 class TacticalHttpHandler(SimpleHTTPRequestHandler):
@@ -381,13 +389,28 @@ class TacticalHttpHandler(SimpleHTTPRequestHandler):
             cams = discovery_daemon.get_all_cameras() if discovery_daemon else []
             if vcam_manager:
                 online_count = sum(1 for c in cams if c.get("is_online"))
-                for c in cams:
-                    c["vcam_driver"] = vcam_manager.get_output_driver_label(
-                        channel_id=c.get("cam_id", ""),
-                        alias=c.get("alias", ""),
-                        ip=c.get("ip", ""),
+                used_drivers = set()
+                for idx, c in enumerate(cams):
+                    cid = c.get("cam_id", "")
+                    cip = c.get("ip", "")
+                    calias = c.get("alias", "")
+                    drv = vcam_manager.get_output_driver_label(
+                        channel_id=cid,
+                        alias=calias,
+                        ip=cip,
                         total_online=online_count
                     )
+                    # Evitar que dos cámaras reciban por defecto el mismo driver si el otro está libre
+                    if drv in used_drivers and drv in ["NDI Camara 1", "NDI Camara 2"]:
+                        alt_drv = "NDI Camara 2" if drv == "NDI Camara 1" else "NDI Camara 1"
+                        if alt_drv not in used_drivers:
+                            drv = alt_drv
+                            vcam_manager.camera_drivers[cid] = drv
+                            if cip:
+                                vcam_manager.camera_drivers[cip] = drv
+                    if drv and drv != "Desactivado":
+                        used_drivers.add(drv)
+                    c["vcam_driver"] = drv
             self._send_json(cams)
             return
 
@@ -435,6 +458,32 @@ class TacticalHttpHandler(SimpleHTTPRequestHandler):
             if discovery_daemon:
                 discovery_daemon.set_scanning_active(False)
             self._send_json({"success": True, "scanning": False})
+            return
+
+        elif path == "/api/config/reset":
+            log_camera("configuración inicializada desde cero: olvidando MACs e IPs anteriores e iniciando búsqueda en red")
+            if video_pipeline and hasattr(video_pipeline, "workers"):
+                for w in list(video_pipeline.workers.values()):
+                    try:
+                        w.stop()
+                    except Exception:
+                        pass
+                video_pipeline.workers.clear()
+
+            app_config["camera_aliases"] = {}
+            app_config["camera_protocols"] = {}
+            app_config["camera_drivers"] = {}
+            app_config["selected_source"] = ""
+            app_config["network"] = {"preferred_nic": "", "ndi_extra_ips": []}
+
+            if vcam_manager:
+                vcam_manager.clear_driver_mapping()
+
+            if discovery_daemon:
+                discovery_daemon.reset_discovery_from_zero()
+
+            save_config(app_config)
+            self._send_json({"success": True, "config": app_config})
             return
 
         elif path == "/api/drivers/reassign":
@@ -602,6 +651,13 @@ class TacticalHttpHandler(SimpleHTTPRequestHandler):
                 app_config["network"]["ndi_extra_ips"] = extra_ips
                 if discovery_daemon:
                     discovery_daemon.update_extra_ips(extra_ips)
+            elif discovery_daemon:
+                # Asegurar que las IPs descubiertas en la sesión queden reflejadas en config_camera.json
+                discovered_ips = [c.get("ip") for c in discovery_daemon.get_all_cameras() if c.get("ip")]
+                if discovered_ips:
+                    if "network" not in app_config:
+                        app_config["network"] = {}
+                    app_config["network"]["ndi_extra_ips"] = discovered_ips
             if aliases:
                 # Chequeo en backend: evitar que se asigne el mismo nombre a dos cámaras físicas distintas
                 if discovery_daemon and getattr(discovery_daemon, "cameras", None):
@@ -712,6 +768,7 @@ def kill_orphan_instances():
     port_pid = find_pid_by_port(8765)
     if port_pid and port_pid != my_pid:
         print(f"[STARTUP] Detectado puerto 8765 retenido por proceso previo (PID: {port_pid}). Liberando...", flush=True)
+        log_camera(f"incidencia en arranque: puerto 8765 retenido por proceso previo (PID {port_pid}), liberando")
         terminate_process_by_pid_fast(port_pid)
         time.sleep(0.1)
 
@@ -721,6 +778,7 @@ def kill_orphan_instances():
         other_pids = [p for p in find_pids_by_name(exe_name) if p != my_pid]
         for p in other_pids:
             print(f"[STARTUP] Finalizando instancia anterior de {exe_name} (PID: {p})...", flush=True)
+            log_camera(f"incidencia en arranque: finalizando instancia anterior bloqueada (PID {p})")
             terminate_process_by_pid_fast(p)
 
 def start_http_server(base_port: int = 8765) -> tuple:
@@ -865,6 +923,7 @@ def main():
             webview.start()
         except Exception as e:
             print(f"[WARN] No se pudo lanzar la ventana webview nativa: {e}")
+            log_camera(f"error al abrir ventana nativa WebView2 en la aplicación: {e}")
             print(f"[INFO] Puedes abrir la consola en tu navegador: http://127.0.0.1:{active_port}")
             print("Presiona Ctrl+C para salir.")
             try:

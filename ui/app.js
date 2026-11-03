@@ -12,6 +12,10 @@ let currentCameras = [];
 let currentStatus = {};
 let statusInterval = null;
 let thumbInterval = null;
+let isSettingsOpen = false;
+let settingsConfig = {};
+let isResettingDiscovery = false;
+let lastSettingsSignature = "";
 
 function setupPolling() {
   if (statusInterval) clearInterval(statusInterval);
@@ -120,6 +124,9 @@ async function fetchCameras() {
     const cameras = await res.json();
     currentCameras = cameras;
     renderCameras(cameras);
+    if (isSettingsOpen) {
+      updateSettingsCamerasIfNeeded(cameras);
+    }
   } catch (err) {
     // Handled in catch
   }
@@ -752,12 +759,190 @@ function selectCameraDriver(camId, newDriver) {
   });
 }
 
+function getSettingsSignature(cameras) {
+  const onlineCams = (cameras || []).filter(c => c.is_online);
+  if (onlineCams.length > 0) {
+    return "online:" + onlineCams.map(c => `${c.cam_id}:${c.ip}`).join("|");
+  }
+  const extraIps = settingsConfig?.network?.ndi_extra_ips || [];
+  return `offline:${isResettingDiscovery ? 'reset' : 'idle'}:${extraIps.join(",")}`;
+}
+
+function updateSettingsCamerasIfNeeded(cameras) {
+  const onlineCams = (cameras || []).filter(c => c.is_online);
+  if (onlineCams.length > 0 && isResettingDiscovery) {
+    isResettingDiscovery = false;
+  }
+  const sig = getSettingsSignature(cameras);
+  if (sig !== lastSettingsSignature) {
+    renderSettingsCameras(cameras, settingsConfig);
+  }
+}
+
+async function resetConfigFromZero() {
+  if (!isSettingsOpen) return;
+  isResettingDiscovery = true;
+  settingsConfig = {
+    ...settingsConfig,
+    camera_aliases: {},
+    camera_protocols: {},
+    camera_drivers: {},
+    network: { ndi_extra_ips: [] }
+  };
+  lastSettingsSignature = "";
+  renderSettingsCameras([], settingsConfig);
+
+  try {
+    await fetch("/api/config/reset", { method: "POST" });
+    await fetchCameras();
+  } catch (err) {
+    console.error("Error al inicializar configuracion:", err);
+  }
+}
+
+function renderSettingsCameras(cameras, cfg) {
+  const aliasesBox = document.getElementById("cfg-aliases-container");
+  if (!aliasesBox) return;
+
+  // Preservar valores editados en curso si ya había inputs en pantalla
+  const editedAliases = {};
+  document.querySelectorAll(".alias-input").forEach(inp => {
+    const cid = inp.getAttribute("data-cam-id");
+    if (cid) editedAliases[cid] = inp.value;
+  });
+  const editedProtos = {};
+  document.querySelectorAll(".protocol-select").forEach(sel => {
+    const cid = sel.getAttribute("data-cam-id");
+    if (cid) editedProtos[cid] = sel.value;
+  });
+  const editedDrivers = {};
+  document.querySelectorAll(".driver-select-btn").forEach(btn => {
+    const cid = btn.getAttribute("data-cam-id");
+    const drv = btn.getAttribute("data-driver");
+    if (cid && drv) editedDrivers[cid] = drv;
+  });
+
+  aliasesBox.innerHTML = "";
+  const errBox = document.getElementById("cfg-aliases-error");
+  if (errBox) errBox.classList.add("hidden");
+
+  lastSettingsSignature = getSettingsSignature(cameras);
+
+  const onlineCams = (cameras || []).filter(c => c.is_online);
+  if (onlineCams.length === 0) {
+    const savedIps = (cfg?.network?.ndi_extra_ips || []).join(", ") || t("settings_none_configured");
+    const statusMsg = isResettingDiscovery ? t("settings_resetting_msg") : t("settings_scanning_msg");
+
+    aliasesBox.innerHTML = `
+      <div class="flex flex-col gap-2 bg-surface-lowest/50 p-2 rounded border border-border-tac/30">
+        <div class="flex items-center justify-between pb-1.5 border-b border-border-tac/20 gap-1.5">
+          <div class="flex items-center gap-1.5 min-w-0">
+            <span class="w-1.5 h-1.5 rounded-full bg-amber-tac animate-pulse shrink-0"></span>
+            <span class="text-[8px] text-txt-muted uppercase font-bold shrink-0">${t("settings_prev_ips_label")}</span>
+            <span class="text-[9px] font-mono text-txt-main font-bold truncate" title="${savedIps}">${savedIps}</span>
+          </div>
+          <button type="button"
+                  onclick="resetConfigFromZero()"
+                  class="px-1.5 py-0.5 rounded bg-amber-dim/40 hover:bg-amber-dim/80 border border-amber-tac/50 hover:border-amber-tac text-amber-tac font-sans font-bold text-[8px] flex items-center gap-0.5 cursor-pointer transition-all active:scale-95 shrink-0"
+                  title="${t('settings_reset_title')}">
+            <span class="material-symbols-outlined text-[11px]">restart_alt</span>
+            <span>${t("settings_reset_btn")}</span>
+          </button>
+        </div>
+        <div class="text-txt-muted text-center py-1.5 text-[8.5px] flex items-center justify-center gap-1.5">
+          <span class="material-symbols-outlined text-[14px] animate-spin text-cyan-tac">progress_activity</span>
+          <span>${statusMsg}</span>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  onlineCams.forEach((cam, idx) => {
+    const row = document.createElement("div");
+    row.className = "flex flex-col gap-1.5 bg-surface-lowest/50 p-2 rounded border border-border-tac/30 shadow-xs";
+    const displayVal = (editedAliases[cam.cam_id] !== undefined) ? editedAliases[cam.cam_id] : getLocalizedAlias(cam);
+    const protoVal = editedProtos[cam.cam_id] || cam.protocol || "ndi";
+    const isRtsp = (protoVal === "rtsp");
+
+    // Driver virtual por el que sale esta cámara
+    let driverName = editedDrivers[cam.cam_id] || cam.vcam_driver;
+    if (!driverName || driverName === "Desactivado") {
+      driverName = cfg?.camera_drivers?.[cam.cam_id] || cfg?.camera_drivers?.[cam.ip];
+    }
+    if (!driverName) {
+      const aliasNoIp = (displayVal || "").replace(/\d+\.\d+\.\d+\.\d+/g, "").trim().toLowerCase();
+      const isCam2 = (idx === 1) || aliasNoIp.endsWith("2") || aliasNoIp.includes("cám 2") || aliasNoIp.includes("cam 2") || (cam.ip && cam.ip.endsWith(".171"));
+      driverName = isCam2 ? "NDI Camara 2" : "NDI Camara 1";
+    }
+
+    row.innerHTML = `
+      <!-- Fila superior: IP (+ botón Inicializar al lado de la IP) y Driver Virtual de Salida DirectShow Reasignable -->
+      <div class="flex items-center justify-between pb-1 border-b border-border-tac/20 gap-1">
+        <div class="flex items-center gap-1.5 min-w-0">
+          <span class="w-1.5 h-1.5 rounded-full bg-cyan-tac shadow-[0_0_4px_#00f0ff] shrink-0"></span>
+          <span class="text-[9px] font-mono text-txt-main font-bold">${cam.ip}</span>
+          <button type="button"
+                  onclick="resetConfigFromZero()"
+                  class="px-1.5 py-0.5 rounded bg-amber-dim/40 hover:bg-amber-dim/80 border border-amber-tac/50 hover:border-amber-tac text-amber-tac font-sans font-bold text-[7.5px] flex items-center gap-0.5 cursor-pointer transition-all active:scale-95 shrink-0"
+                  title="${t('settings_reset_title')}">
+            <span class="material-symbols-outlined text-[11px]">restart_alt</span>
+            <span>${t("settings_reset_btn")}</span>
+          </button>
+        </div>
+        <div class="flex items-center gap-1 shrink-0">
+          <span class="material-symbols-outlined text-[12px] text-cyan-tac">videocam</span>
+          <span class="text-[7.5px] uppercase tracking-wider text-txt-muted font-bold">${t("settings_driver_output")}:</span>
+          <div class="relative">
+            <button type="button" 
+                    data-cam-id="${cam.cam_id}" 
+                    data-driver="${driverName}" 
+                    onclick="toggleDriverDropdown(event, '${cam.cam_id}')" 
+                    class="driver-select-btn px-1.5 py-0.5 rounded font-mono font-bold text-[8px] bg-cyan-dim/40 hover:bg-cyan-dim/70 border border-cyan-tac/50 hover:border-cyan-tac text-cyan-tac flex items-center gap-1 cursor-pointer transition-all active:scale-95 shadow-xs" 
+                    title="Clic para reasignar driver DirectShow">
+              <span class="driver-btn-label">${driverName}</span>
+              <span class="material-symbols-outlined text-[10px] opacity-70">arrow_drop_down</span>
+            </button>
+            <div id="driver-dropdown-${cam.cam_id}" class="driver-dropdown hidden absolute right-0 top-full mt-1 z-50 bg-surface-low border border-border-tac rounded shadow-2xl p-1 min-w-[170px] flex flex-col gap-0.5"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Fila inferior: Alias editable y selector de protocolo -->
+      <div class="flex items-center gap-1.5">
+        <div class="flex flex-col flex-1 gap-0.5 min-w-0">
+          <label class="text-[7.5px] uppercase font-bold text-txt-muted/80">${t("settings_alias_label")}</label>
+          <input type="text" data-cam-id="${cam.cam_id}" value="${displayVal}" placeholder="Alias..." class="alias-input bg-surface-lowest border border-border-tac rounded px-1.5 py-0.5 text-txt-main text-[9.5px] outline-none focus:border-cyan-tac transition-colors">
+        </div>
+        <div class="flex flex-col gap-0.5 w-[115px] shrink-0">
+          <label class="text-[7.5px] uppercase font-bold text-txt-muted/80">${t("settings_protocol_title")}</label>
+          <select data-cam-id="${cam.cam_id}" class="protocol-select bg-surface-lowest border border-border-tac rounded px-1 py-0.5 text-txt-main text-[9px] outline-none focus:border-cyan-tac">
+            <option value="ndi" ${!isRtsp ? 'selected' : ''}>NDI (1080p)</option>
+            <option value="rtsp" ${isRtsp ? 'selected' : ''}>RTSP (720p)</option>
+          </select>
+        </div>
+      </div>
+    `;
+    const inputEl = row.querySelector("input");
+    if (inputEl) {
+      inputEl.addEventListener("input", () => {
+        document.querySelectorAll(".alias-input").forEach(i => i.classList.remove("border-red-tac", "bg-red-dim/20"));
+        if (errBox) errBox.classList.add("hidden");
+      });
+    }
+    aliasesBox.appendChild(row);
+  });
+}
+
 function openSettings() {
   const modal = document.getElementById("modal-settings");
   if (!modal) return;
   modal.classList.remove("hidden");
+  isSettingsOpen = true;
+  isResettingDiscovery = false;
+  lastSettingsSignature = "";
 
-  // Iniciar búsqueda activa en la red (NDI/ARP) únicamente durante la configuración
+  // Iniciar sondeo periódico de cámaras en red únicamente durante la pantalla de configuración
   fetch("/api/discovery/start", { method: "POST" }).catch(() => {});
 
   // Obtener lista actualizada de drivers DirectShow disponibles
@@ -769,97 +954,20 @@ function openSettings() {
 
   // Populate fields
   fetch("/api/config").then(r => r.json()).then(cfg => {
+    settingsConfig = cfg || {};
     if (document.getElementById("cfg-preview-fps")) {
       document.getElementById("cfg-preview-fps").value = String(cfg.preview_fps || 4);
     }
     if (document.getElementById("cfg-recording-dir")) {
       document.getElementById("cfg-recording-dir").value = cfg.recording_dir || "";
     }
-
-    const aliasesBox = document.getElementById("cfg-aliases-container");
-    aliasesBox.innerHTML = "";
-    const errBox = document.getElementById("cfg-aliases-error");
-    if (errBox) errBox.classList.add("hidden");
-
-    // Filtrar únicamente las cámaras online para configuración
-    const onlineCams = (currentCameras || []).filter(c => c.is_online);
-    if (onlineCams.length === 0) {
-      aliasesBox.innerHTML = `
-        <div class="text-txt-muted text-center py-2 text-[8.5px] italic bg-surface-lowest/30 rounded border border-border-tac/20" data-i18n="settings_no_online_cameras">
-          ${t("settings_no_online_cameras")}
-        </div>
-      `;
-    } else {
-      onlineCams.forEach(cam => {
-        const row = document.createElement("div");
-        row.className = "flex flex-col gap-1.5 bg-surface-lowest/50 p-2 rounded border border-border-tac/30 shadow-xs";
-        const displayVal = getLocalizedAlias(cam);
-        const isRtsp = (cam.protocol === "rtsp");
-
-        // Driver virtual por el que sale esta cámara
-        let driverName = cam.vcam_driver;
-        if (!driverName || driverName === "Desactivado") {
-          driverName = cfg.camera_drivers?.[cam.cam_id] || cfg.camera_drivers?.[cam.ip];
-        }
-        if (!driverName) {
-          const isCam2 = (cam.alias && cam.alias.includes("2")) || (cam.ip && cam.ip.endsWith(".171")) || (cam.cam_id && cam.cam_id.includes("2"));
-          driverName = isCam2 ? "NDI Camara 2" : "NDI Camara 1";
-        }
-
-        row.innerHTML = `
-          <!-- Fila superior: IP y Driver Virtual de Salida DirectShow Reasignable -->
-          <div class="flex items-center justify-between pb-1 border-b border-border-tac/20">
-            <div class="flex items-center gap-1.5">
-              <span class="w-1.5 h-1.5 rounded-full bg-cyan-tac shadow-[0_0_4px_#00f0ff]"></span>
-              <span class="text-[9px] font-mono text-txt-main font-bold">${cam.ip}</span>
-            </div>
-            <div class="flex items-center gap-1">
-              <span class="material-symbols-outlined text-[12px] text-cyan-tac">videocam</span>
-              <span class="text-[7.5px] uppercase tracking-wider text-txt-muted font-bold">${t("settings_driver_output")}:</span>
-              <div class="relative">
-                <button type="button" 
-                        data-cam-id="${cam.cam_id}" 
-                        data-driver="${driverName}" 
-                        onclick="toggleDriverDropdown(event, '${cam.cam_id}')" 
-                        class="driver-select-btn px-1.5 py-0.5 rounded font-mono font-bold text-[8px] bg-cyan-dim/40 hover:bg-cyan-dim/70 border border-cyan-tac/50 hover:border-cyan-tac text-cyan-tac flex items-center gap-1 cursor-pointer transition-all active:scale-95 shadow-xs" 
-                        title="Clic para reasignar driver DirectShow">
-                  <span class="driver-btn-label">${driverName}</span>
-                  <span class="material-symbols-outlined text-[10px] opacity-70">arrow_drop_down</span>
-                </button>
-                <div id="driver-dropdown-${cam.cam_id}" class="driver-dropdown hidden absolute right-0 top-full mt-1 z-50 bg-surface-low border border-border-tac rounded shadow-2xl p-1 min-w-[170px] flex flex-col gap-0.5"></div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Fila inferior: Alias editable y selector de protocolo -->
-          <div class="flex items-center gap-1.5">
-            <div class="flex flex-col flex-1 gap-0.5 min-w-0">
-              <label class="text-[7.5px] uppercase font-bold text-txt-muted/80">${t("settings_alias_label")}</label>
-              <input type="text" data-cam-id="${cam.cam_id}" value="${displayVal}" placeholder="Alias..." class="alias-input bg-surface-lowest border border-border-tac rounded px-1.5 py-0.5 text-txt-main text-[9.5px] outline-none focus:border-cyan-tac transition-colors">
-            </div>
-            <div class="flex flex-col gap-0.5 w-[115px] shrink-0">
-              <label class="text-[7.5px] uppercase font-bold text-txt-muted/80">${t("settings_protocol_title")}</label>
-              <select data-cam-id="${cam.cam_id}" class="protocol-select bg-surface-lowest border border-border-tac rounded px-1 py-0.5 text-txt-main text-[9px] outline-none focus:border-cyan-tac">
-                <option value="ndi" ${!isRtsp ? 'selected' : ''}>NDI (1080p)</option>
-                <option value="rtsp" ${isRtsp ? 'selected' : ''}>RTSP (720p)</option>
-              </select>
-            </div>
-          </div>
-        `;
-        const inputEl = row.querySelector("input");
-        if (inputEl) {
-          inputEl.addEventListener("input", () => {
-            document.querySelectorAll(".alias-input").forEach(i => i.classList.remove("border-red-tac", "bg-red-dim/20"));
-            if (errBox) errBox.classList.add("hidden");
-          });
-        }
-        aliasesBox.appendChild(row);
-      });
-    }
+    renderSettingsCameras(currentCameras, settingsConfig);
   });
 }
 
 function closeSettings() {
+  isSettingsOpen = false;
+  isResettingDiscovery = false;
   const modal = document.getElementById("modal-settings");
   if (modal) modal.classList.add("hidden");
   const errBox = document.getElementById("cfg-aliases-error");

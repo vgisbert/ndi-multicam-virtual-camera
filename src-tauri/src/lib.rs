@@ -19,8 +19,8 @@ pub fn run() {
     // 1. Load config
     let config_path = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("config.json")))
-        .unwrap_or_else(|| std::path::PathBuf::from("config.json"));
+        .and_then(|p| p.parent().map(|d| d.join("config_camera.json")))
+        .unwrap_or_else(|| std::path::PathBuf::from("config_camera.json"));
 
     let config: AppConfig = if config_path.exists() {
         std::fs::read_to_string(&config_path)

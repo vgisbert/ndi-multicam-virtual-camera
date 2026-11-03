@@ -16,6 +16,7 @@ import threading
 import subprocess
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+from logger import log_camera
 
 _DETECTED_ENCODER = None
 _DETECTED_ENCODER_INFO = None
@@ -211,6 +212,7 @@ class SingleCameraRecorder:
             return True
         except Exception as e:
             print(f"[ERROR] No se pudo iniciar FFmpeg para {self.output_path}: {e}", flush=True)
+            log_camera(f"error al iniciar grabación FFmpeg para '{self.alias}': {e}")
             self.is_active = False
             return False
 
@@ -341,6 +343,7 @@ class MultiCameraRecordingManager:
             else:
                 self.is_recording = False
                 self.start_time = None
+                log_camera("error al iniciar grabación: no hay cámaras en línea disponibles o falló el codificador")
                 return False
 
     def push_frame(self, cam_id: str, frame_bgr):

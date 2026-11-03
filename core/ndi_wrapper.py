@@ -7,6 +7,7 @@ import os
 import sys
 import ctypes
 from typing import List, Dict, Optional, Tuple
+from logger import log_camera
 
 class NDIlib_source_t(ctypes.Structure):
     _fields_ = [
@@ -103,8 +104,10 @@ class NDIWrapper:
                     break
                 except Exception as e:
                     print(f"[WARN] Error cargando NDI DLL en {path}: {e}")
+                    log_camera(f"error cargando librería NDI en {path}: {e}")
 
         if not loaded:
+            log_camera("error crítico en la aplicación: no se encontró Processing.NDI.Lib.x64.dll")
             raise RuntimeError(
                 "No se encontro Processing.NDI.Lib.x64.dll en el sistema ni en core/lib. "
                 "Por favor, instala NDI 6 Runtime o verifica los archivos del proyecto."
@@ -160,6 +163,7 @@ class NDIWrapper:
             ver = v_str.decode('utf-8', errors='ignore') if v_str else 'Desconocida'
             print(f"[OK] NDI SDK inicializado exitosamente: {ver}")
         else:
+            log_camera("error crítico en la aplicación: fallo al inicializar NDIlib")
             raise RuntimeError("Fallo al inicializar NDIlib (NDIlib_initialize retorno False).")
 
     def create_finder(self, extra_ips: Optional[List[str]] = None):
